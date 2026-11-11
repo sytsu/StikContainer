@@ -432,4 +432,132 @@ NSString* FBSOpenApplicationOptionKeyPayloadURL = @"__PayloadURL";
 
     return result;
 }
+
+#pragma mark Built-in JIT
+
++ (NSString *)builtInJITHomePath {
+    const char *home = getenv("LC_HOME_PATH");
+    return home ? @(home) : NSHomeDirectory();
+}
+
++ (NSString *)builtInJITImportedPairingFilePath {
+    return [[self builtInJITHomePath] stringByAppendingPathComponent:@"Documents/StikJIT/pairingFile.plist"];
+}
+
+// An imported pairing file wins; otherwise use the one built-in SideStore keeps.
++ (NSString *)builtInJITPairingFilePath {
+    NSArray<NSString *> *candidates = @[
+        [self builtInJITImportedPairingFilePath],
+        [[self builtInJITHomePath] stringByAppendingPathComponent:@"Documents/SideStore/Documents/ALTPairingFile.mobiledevicepairing"],
+    ];
+    for (NSString *path in candidates) {
+        NSDictionary *attributes = [NSFileManager.defaultManager attributesOfItemAtPath:path error:nil];
+        if (attributes.fileSize > 0) {
+            return path;
+        }
+    }
+    return nil;
+}
+
+// Holds the Developer Disk Image cache and the log. It is in the app group when there is one,
+// so the LiveProcess helper and LiveContainer see the same files.
++ (NSString *)builtInJITWorkDirectory {
+    NSString *base = [self.appGroupPath.path stringByAppendingPathComponent:@"LiveContainer"];
+    if (!base) {
+        base = [[self builtInJITHomePath] stringByAppendingPathComponent:@"Library"];
+    }
+    NSString *directory = [base stringByAppendingPathComponent:@"StikJIT"];
+    [NSFileManager.defaultManager createDirectoryAtPath:directory withIntermediateDirectories:YES attributes:nil error:nil];
+    return directory;
+}
+
++ (NSString *)builtInJITLogPath {
+    return [[self builtInJITWorkDirectory] stringByAppendingPathComponent:@"last-jit.log"];
+}
+
+static void builtInJITLog(NSString *message, BOOL startNewLog) {
+    NSString *path = [LCSharedUtils builtInJITLogPath];
+    NSDateFormatter *formatter = [NSDateFormatter new];
+    formatter.dateFormat = @"yyyy-MM-dd HH:mm:ss.SSS";
+    NSData *line = [[NSString stringWithFormat:@"%@ [host %d] %@\n", [formatter stringFromDate:NSDate.date], getpid(), message] dataUsingEncoding:NSUTF8StringEncoding];
+    if (startNewLog || ![NSFileManager.defaultManager fileExistsAtPath:path]) {
+        [line writeToFile:path atomically:YES];
+        return;
+    }
+    NSFileHandle *handle = [NSFileHandle fileHandleForWritingAtPath:path];
+    [handle seekToEndOfFile];
+    [handle writeData:line];
+    [handle closeFile];
+}
+
+// Starts a LiveProcess helper that runs StikJIT against `pid`. `completion` is called once:
+// with nil when the helper finished (the JIT script detached), or with the reason it failed.
++ (void)startBuiltInJITForPID:(int)pid scriptBase64:(NSString *)scriptBase64 completion:(void (^)(NSString *error))completion {
+    static NSMutableArray *runningHelpers;
+    NSObject *lock = [NSObject new];
+    __block BOOL finished = NO;
+    void (^finish)(NSString *) = ^(NSString *error) {
+        @synchronized (lock) {
+            if (finished) return;
+            finished = YES;
+        }
+        builtInJITLog(error ? [NSString stringWithFormat:@"failed: %@", error] : @"helper finished", NO);
+        if (completion) completion(error);
+    };
+
+    builtInJITLog([NSString stringWithFormat:@"starting built-in JIT for pid %d", pid], YES);
+
+    NSString *pairingPath = [self builtInJITPairingFilePath];
+    NSData *pairingData = pairingPath ? [NSData dataWithContentsOfFile:pairingPath] : nil;
+    if (pairingData.length == 0) {
+        finish(@"No pairing file found. Set up SideStore, or import a pairing file in LiveContainer Settings > JIT.");
+        return;
+    }
+    builtInJITLog([NSString stringWithFormat:@"pairing file: %@", pairingPath.lastPathComponent], NO);
+
+    NSString *liveProcessPath = [lcMainBundle.builtInPlugInsPath stringByAppendingPathComponent:@"LiveProcess.appex"];
+    NSString *liveProcessID = [NSBundle bundleWithPath:liveProcessPath].bundleIdentifier;
+    NSError *extensionError = nil;
+    NSExtension *extension = liveProcessID ? [NSExtension extensionWithIdentifier:liveProcessID error:&extensionError] : nil;
+    if (!extension) {
+        finish([NSString stringWithFormat:@"LiveProcess extension not found (%@). Reinstall LiveContainer and keep its app extensions.", extensionError.localizedDescription ?: @"missing from the app"]);
+        return;
+    }
+    extension.preferredLanguages = @[];
+
+    NSMutableDictionary *request = [NSMutableDictionary dictionary];
+    request[@"pid"] = @(pid);
+    request[@"pairingData"] = pairingData;
+    if (scriptBase64.length > 0) {
+        request[@"script"] = scriptBase64;
+    }
+    if (self.appGroupPath) {
+        request[@"sharedDirectory"] = [self builtInJITWorkDirectory];
+    }
+    NSExtensionItem *item = [NSExtensionItem new];
+    item.userInfo = @{@"LCJITHelper": request};
+
+    [extension setRequestCancellationBlock:^(NSUUID *uuid, NSError *error) {
+        finish(error.localizedDescription ?: @"The JIT helper cancelled the request.");
+    }];
+    [extension setRequestInterruptionBlock:^(NSUUID *uuid) {
+        finish(@"The JIT helper process exited unexpectedly.");
+    }];
+    [extension setRequestCompletionBlock:^(NSUUID *uuid, NSArray *items) {
+        finish(nil);
+    }];
+
+    // The extension object has to outlive this call, or the helper is torn down.
+    @synchronized (self) {
+        if (!runningHelpers) runningHelpers = [NSMutableArray array];
+        [runningHelpers addObject:extension];
+    }
+    [extension beginExtensionRequestWithInputItems:@[item] completion:^(NSUUID *identifier) {
+        if (!identifier) {
+            finish(@"Could not start the JIT helper process.");
+            return;
+        }
+        builtInJITLog([NSString stringWithFormat:@"helper started, pid %d", [extension pidForRequestIdentifier:identifier]], NO);
+    }];
+}
 @end

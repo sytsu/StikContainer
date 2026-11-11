@@ -101,6 +101,74 @@ static BOOL checkJITEnabled() {
 #endif
 }
 
+#pragma mark Built-in JIT
+
+static BOOL isDebuggerAttached(void) {
+    int flags = 0;
+    csops(getpid(), 0, &flags, sizeof(flags));
+    return (flags & CS_DEBUGGED) != 0;
+}
+
+// Used when the helper fails after the guest app is already on screen.
+static void showBuiltInJITError(NSString *message) {
+    UIWindow *window = nil;
+    for (UIScene *scene in [[NSClassFromString(@"UIApplication") sharedApplication] connectedScenes]) {
+        if (![scene isKindOfClass:UIWindowScene.class]) continue;
+        for (UIWindow *candidate in ((UIWindowScene *)scene).windows) {
+            if (candidate.isKeyWindow || !window) window = candidate;
+        }
+    }
+    UIViewController *presenter = window.rootViewController;
+    while (presenter.presentedViewController) {
+        presenter = presenter.presentedViewController;
+    }
+    if (!presenter) return;
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Built-in JIT failed" message:message preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+    [presenter presentViewController:alert animated:YES completion:nil];
+}
+
+// Starts the JIT helper for this process and waits a short while for its debugger to attach.
+// The wait is bounded because this runs before UIApplicationMain, under the launch watchdog.
+// Returns an error only when the helper failed during the wait; a slow helper keeps going
+// in the background while the app launches.
+static NSString *acquireBuiltInJIT(NSString *scriptBase64) {
+    if (isDebuggerAttached()) return nil;
+
+    NSObject *lock = [NSObject new];
+    __block NSString *failure = nil;
+    __block BOOL helperDone = NO;
+    __block BOOL stillWaiting = YES;
+    [LCSharedUtils startBuiltInJITForPID:getpid() scriptBase64:scriptBase64 completion:^(NSString *error) {
+        BOOL reportNow;
+        @synchronized (lock) {
+            failure = error;
+            helperDone = YES;
+            reportNow = !stillWaiting;
+        }
+        if (error && reportNow) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                showBuiltInJITError(error);
+            });
+        }
+    }];
+
+    CFAbsoluteTime deadline = CFAbsoluteTimeGetCurrent() + 10.0;
+    while (CFAbsoluteTimeGetCurrent() < deadline && !isDebuggerAttached()) {
+        @synchronized (lock) {
+            if (helperDone) break;
+        }
+        // Let callbacks that target the main queue run while we wait.
+        CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.02, false);
+        usleep(10 * 1000);
+    }
+
+    @synchronized (lock) {
+        stillWaiting = NO;
+        return failure ? [NSString stringWithFormat:@"Built-in JIT failed: %@", failure] : nil;
+    }
+}
+
 static uint64_t rnd64(uint64_t v, uint64_t r) {
     r--;
     return (v + r) & ~r;
@@ -366,7 +434,27 @@ static NSString* invokeAppMain(NSString *selectedApp, NSString *selectedContaine
     if(!guestAppInfo) {
         return @"App bundle not found! Unable to read LCAppInfo.plist.";
     }
-    
+
+#if !TARGET_OS_SIMULATOR && !TARGET_OS_MACCATALYST
+    // Built-in JIT: LiveContainer enables JIT for this process itself, through a LiveProcess helper.
+    // Multitask launches are handled by the LiveContainer UI, which knows the guest's pid.
+    if (!isLiveProcess && !isSideStore) {
+        NSDate *requestedAt = [lcUserDefaults objectForKey:@"LCBuiltInJITPendingDate"];
+        NSString *requestedScript = [lcUserDefaults stringForKey:@"LCBuiltInJITScript"];
+        [lcUserDefaults removeObjectForKey:@"LCBuiltInJITPendingDate"];
+        [lcUserDefaults removeObjectForKey:@"LCBuiltInJITScript"];
+        // a one-off request from the app list, ignored if it is stale
+        BOOL requested = [requestedAt isKindOfClass:NSDate.class] && fabs(requestedAt.timeIntervalSinceNow) < 15;
+        BOOL builtInSelected = [lcSharedDefaults integerForKey:@"LCJITEnablerType"] == 7;
+        if (requested || (builtInSelected && [guestAppInfo[@"isJITNeeded"] boolValue])) {
+            NSString *jitError = acquireBuiltInJIT(requestedScript ?: guestAppInfo[@"jitLaunchScriptJs"]);
+            if (jitError) {
+                return jitError;
+            }
+        }
+    }
+#endif
+
     if([guestAppInfo[@"doUseLCBundleId"] boolValue] ) {
         NSMutableDictionary* infoPlist = [NSMutableDictionary dictionaryWithContentsOfFile:[NSString stringWithFormat:@"%@/Info.plist", bundlePath]];
         CFErrorRef error = NULL;

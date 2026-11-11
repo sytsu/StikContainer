@@ -23,7 +23,7 @@ They want LiveContainer itself to enable JIT: tap an app that is set to need JIT
 ## Non-goals
 
 - A GitHub fork, CI, or keeping up with future nightlies. The deliverable is one working IPA built on this Mac.
-- **JIT for multitask-mode launches in v1.** *(Builder's call to include it if cheap.)* LiveContainer's main process stays alive there and already receives the LiveProcess PID through `jitLaunch(withPID:)`, so it may be easy.
+- **JIT for multitask-mode launches in v1.** *(Builder's call to include it if cheap. If it's left out, a Built-in JIT launch that would open as multitask opens normally instead (Claude's call).)* LiveContainer's main process stays alive there and already receives the LiveProcess PID through `jitLaunch(withPID:)`, so it may be easy.
 - Making apps work that don't already work with StikDebug. If an app's JIT engine doesn't follow the iOS 26 script protocol, this won't fix it.
 - Changing guest apps (MeloNX etc.).
 - Removing or changing the existing JIT enablers.
@@ -67,6 +67,8 @@ They want LiveContainer itself to enable JIT: tap an app that is set to need JIT
 - This uses the attach model: JIT arrives shortly after bootstrap, not before.
 - MeloNX-style apps wait for `CS_DEBUGGED` themselves and then run the JIT26 breakpoint protocol, which the attached script services.
 - Don't block the main thread for long before `UIApplicationMain`, because of the launch watchdog. The first run may download the DDI.
+- *(Claude's call.)* If starting an extension before `UIApplicationMain` turns out to be unreliable, start the helper at the first point after it where that works, such as a `didFinishLaunching` hook.
+- *(Claude's call.)* While Built-in is selected, LiveContainer also catches `stikjit://enable-jit` and `stikdebug://enable-jit` URLs opened by the guest app and handles them with the built-in helper. That request's `script-name` or `script-data` sets the script. Apps that ask StikDebug for JIT themselves then work too.
 
 **Lifetime**
 - The helper must stay alive until `enableJIT` returns (script detached), then exit.
@@ -78,6 +80,9 @@ They want LiveContainer itself to enable JIT: tap an app that is set to need JIT
   1. an imported file at `$LC_HOME_PATH/Documents/StikJIT/pairingFile.plist`
   2. SideStore's `$LC_HOME_PATH/Documents/SideStore/Documents/ALTPairingFile.mobiledevicepairing`, only if it parses as RPPairing
 - The helper cannot read LiveContainer's container, so the guest process sends the bytes over XPC. The helper writes a temp file and deletes it right after use.
+- The user already has an RPPairing file, because StikDebug only reads that format.
+  - The settings help text tells them to import StikDebug's `pairingFile.plist` before removing StikDebug.
+  - Generating a pairing file on the device is out of scope.
 
 **DDI cache**
 - Keep it in the helper's own Library (`DDIPaths.default(in: Library/StikJIT)`).
@@ -124,7 +129,17 @@ Write a plain-text helper log to `$LC_HOME_PATH/Documents/StikJIT/last-jit.log`,
 
 ## Testing
 
-The user installs each build with their normal sideloading tool (same Apple ID, so the team suffix `3BWTF5V8GA` is unchanged). Keep the official nightly IPA (`LiveContainer+SideStore.ipa`, 3.8.13) as a rollback that also installs in place. Test on device:
+The user installs each build with their normal sideloading tool (same Apple ID, so the team suffix `3BWTF5V8GA` is unchanged). Keep the official nightly IPA (`LiveContainer+SideStore.ipa`, 3.8.13) as a rollback that also installs in place.
+
+The iPhone (`iPhone17,3`) is paired with this Mac and visible to `xcrun devicectl`. Use that to pull `last-jit.log` and other files from LiveContainer's data container where signing allows it. Installs still go through the user's sideloader.
+
+*(Claude's call.)* The first build is a diagnostic build: the Built-in enabler, the helper launch and heavy logging, with the minimum UI. It proves the risky parts before any polish:
+- the helper starts from the guest process
+- RSD/tunnel reachability from inside the extension
+- TXM detection inside the extension sandbox
+- the DDI cache survives between launches
+
+Test on device:
 
 1. Install over the existing app and confirm the apps, data and settings are intact.
 2. Select Built-in, then check the pairing status and Prepare JIT.
@@ -132,3 +147,19 @@ The user installs each build with their normal sideloading tool (same Apple ID, 
 4. Run a one-off JIT launch from the long-press menu.
 5. Launch a non-JIT app normally to check for regressions.
 6. Switch back to the StikDebug enabler and confirm it still works.
+
+## First build (2026-11-10): where it differs from this document
+
+Built without answers to the three open questions, so it assumes apps detach once their JIT memory is set up.
+
+- **Helper code location:** the StikJIT calls live in `LiveContainerSwiftUI` (`Utilities/LCBuiltInJIT.swift`), which links StikJIT weakly. The LiveProcess helper loads that framework with `dlopen`. No new target was added.
+- **Result channel:** the helper reports through the extension request (complete or cancel with an error), not a separate XPC connection. Progress goes to the log file only.
+- **Shared files:** the Developer Disk Image cache and `last-jit.log` are in the app group (`LiveContainer/StikJIT`), so Prepare JIT in Settings and the helper share one download. Prepare JIT runs in LiveContainer's own process.
+- **Launch-time feedback:** no overlay. The helper starts before `UIApplicationMain`, and LiveContainer waits up to 10 seconds for the debugger to attach.
+  - A failure inside that wait returns to LiveContainer's own screen with the error.
+  - A failure after it shows an alert over the app.
+- **Trigger:** bootstrap enables JIT when Built-in is selected and the app has "Launch with JIT" on, or when the long-press item set a one-off request.
+- **Multitask:** included, by targeting the LiveProcess pid from LiveContainer's UI. The app starts before JIT arrives.
+- **Not built:** catching `stikjit://` and `stikdebug://` URLs opened by a guest app.
+- **IPA:** `scripts/package_ipa.sh` copies the built-in SideStore pieces from the official nightly IPA instead of running dylibify and ldid.
+- **Not tested on a device.** The IPA builds, and its contents match the official nightly apart from the added `StikJIT.framework` and the changed binaries.

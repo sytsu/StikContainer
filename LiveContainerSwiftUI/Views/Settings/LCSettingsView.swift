@@ -18,9 +18,13 @@ enum JITEnablerType : Int, CaseIterable, Identifiable {
     case SideStore = 4
     case StosDebug = 5
     case StosDebugLC = 6
-    
+    // LiveContainer enables JIT itself with StikJIT in a helper process.
+    // LCBootstrap.m checks for this raw value.
+    case BuiltIn = 7
+
     var displayName: String {
         switch self {
+        case .BuiltIn: "Built-in (StikJIT)"
         case .StikJIT: "StikDebug"
         case .StikJITLC: "StikDebug (Another LiveContainer/Multitask)"
         case .StosDebug: "StosDebug"
@@ -189,7 +193,11 @@ struct LCSettingsView: View {
                 } footer: {
                     Text("lc.settings.JitDesc".loc)
                 }
-                
+
+                if JITEnabler == .BuiltIn {
+                    LCBuiltInJITSettingsSection()
+                }
+
                 Section {
                     Picker(selection: $selected32BitEmulator) {
                         ForEach(sharedModel.arm32EmuApps, id: \.self) { app in

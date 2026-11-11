@@ -6,6 +6,7 @@
 //
 
 #import <dlfcn.h>
+#import <objc/message.h>
 #import <UIKit/UIKit.h>
 #import <mach-o/dyld.h>
 #import "../LiveContainer/utils.h"
@@ -33,6 +34,38 @@ static NSDictionary *retrievedAppInfo;
 }
 @end
 
+// Built-in JIT helper mode. This LiveProcess instance runs no guest app: it loads StikJIT
+// (through LiveContainerSwiftUI) and enables JIT for the process that sent the request.
+// It has to be a separate process, because a process cannot attach a debugger to itself.
+static int LCRunJITHelper(NSDictionary *request, NSExtensionContext *context) {
+    dispatch_queue_t queue = dispatch_queue_create("com.kdt.livecontainer.jit-helper", DISPATCH_QUEUE_SERIAL);
+    dispatch_async(queue, ^{
+        NSString *error = nil;
+        void *handle = dlopen("@executable_path/../../Frameworks/LiveContainerSwiftUI.framework/LiveContainerSwiftUI", RTLD_NOW | RTLD_GLOBAL);
+        Class helperClass = NSClassFromString(@"LCBuiltInJIT");
+        SEL runSelector = NSSelectorFromString(@"runHelperWithRequest:");
+        if (!handle) {
+            error = [NSString stringWithFormat:@"Could not load the JIT helper code: %s", dlerror()];
+        } else if (![helperClass respondsToSelector:runSelector]) {
+            error = @"The JIT helper code is missing from this build.";
+        } else {
+            // blocks until the JIT script detaches or fails
+            error = ((NSString *(*)(id, SEL, NSDictionary *))objc_msgSend)(helperClass, runSelector, request);
+        }
+        if (error) {
+            [context cancelRequestWithError:[NSError errorWithDomain:@"LCBuiltInJIT" code:1 userInfo:@{NSLocalizedDescriptionKey: error}]];
+        } else {
+            [context completeRequestReturningItems:@[] completionHandler:nil];
+        }
+        // give the reply time to reach the host before this process goes away
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+            exit(0);
+        });
+    });
+    CFRunLoopRun();
+    return 0;
+}
+
 extern int LiveContainerMain(int argc, char *argv[]);
 static char **_envp, **_apple = NULL;
 int LiveProcessMain(int argc, char *argv[]) {
@@ -45,7 +78,12 @@ int LiveProcessMain(int argc, char *argv[]) {
     if (guestExtension) {
         return LCRunGuestExtension(guestExtension, LiveProcessHandler.extensionContext);
     }
-    
+
+    NSDictionary *jitHelperRequest = appInfo[@"LCJITHelper"];
+    if (jitHelperRequest) {
+        return LCRunJITHelper(jitHelperRequest, LiveProcessHandler.extensionContext);
+    }
+
     // Check if we received a request to execute a custom payload
     NSString *customPayloadDylib = appInfo[@"customPayloadDylib"];
     if(customPayloadDylib) {
