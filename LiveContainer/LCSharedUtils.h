@@ -17,4 +17,11 @@
 + (NSString*)findDefaultContainerWithBundleId:(NSString*)bundleId;
 + (NSArray<NSString*>*)lcUnorderedUrlSchemes;
 + (NSArray<NSString*>*)lcUrlSchemes;
+
+// Built-in JIT (StikJIT running in a LiveProcess helper)
++ (NSString *)builtInJITImportedPairingFilePath;
++ (NSString *)builtInJITPairingFilePath;
++ (NSString *)builtInJITWorkDirectory;
++ (NSString *)builtInJITLogPath;
++ (void)startBuiltInJITForPID:(int)pid scriptBase64:(NSString *)scriptBase64 completion:(void (^)(NSString *error))completion;
 @end

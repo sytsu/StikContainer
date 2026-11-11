@@ -112,7 +112,7 @@ final class LCAppBannerViewController: UIViewController, UIContextMenuInteractio
         }
     }
 
-    private func runApp(multitask: Bool? = nil) async {
+    private func runApp(multitask: Bool? = nil, forceJIT: Bool? = nil) async {
         if configuration.model.appInfo.isLocked && !DataManager.shared.model.isHiddenAppUnlocked {
             do {
                 if !(try await LCUtils.authenticateUser()) {
@@ -125,7 +125,7 @@ final class LCAppBannerViewController: UIViewController, UIContextMenuInteractio
         }
 
         do {
-            try await configuration.model.runApp(multitask: multitask)
+            try await configuration.model.runApp(multitask: multitask, forceJIT: forceJIT)
         } catch {
             showError(error.localizedDescription)
         }
@@ -170,6 +170,18 @@ final class LCAppBannerViewController: UIViewController, UIContextMenuInteractio
             ) { [weak self] _ in
                 Task { [weak self] in
                     await self?.runApp(multitask: !shouldLaunchInMultitaskMode)
+                }
+            })
+        }
+
+        // One-off JIT launch, whatever the app's own "Launch with JIT" setting says
+        if LCBuiltInJIT.isSelected {
+            sectionChildren.append(UIAction(
+                title: "Launch with JIT",
+                image: UIImage(systemName: "bolt.fill")
+            ) { [weak self] _ in
+                Task { [weak self] in
+                    await self?.runApp(forceJIT: true)
                 }
             })
         }

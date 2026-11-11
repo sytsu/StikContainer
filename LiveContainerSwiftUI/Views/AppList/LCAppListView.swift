@@ -1056,6 +1056,12 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
     }
 
     func jitLaunch(withScript script: String, appName: String, classicMode: UInt) async {
+        if LCBuiltInJIT.isSelected {
+            // LiveContainer relaunches into the app and enables JIT for itself there (LCBootstrap.m)
+            LCBuiltInJIT.requestForNextLaunch(scriptBase64: script)
+            LCSharedUtils.launchToGuestApp(withClassicMode: classicMode)
+            return
+        }
         await MainActor.run {
             jitLog = ""
         }
@@ -1080,6 +1086,17 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
     }
     
     func jitLaunch(withPID pid: Int, withScript script: String? = nil, appName: String) async {
+        if LCBuiltInJIT.isSelected {
+            // multitask: the app runs in LiveProcess, so the helper targets that pid from here
+            LCSharedUtils.startBuiltInJIT(forPID: Int32(pid), scriptBase64: script) { error in
+                guard let error else { return }
+                Task { await MainActor.run {
+                    errorInfo = "Built-in JIT failed: \(error)"
+                    errorShow = true
+                }}
+            }
+            return
+        }
         await MainActor.run {
             let encodedData = script?.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed)
                 
