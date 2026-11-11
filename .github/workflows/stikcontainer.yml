@@ -1,0 +1,119 @@
+name: StikContainer nightly
+
+# Rebuilds StikContainer whenever LiveContainer publishes a new nightly:
+# the JIT patch is rebased onto the exact commit that nightly was built from,
+# then built and published as this repo's "nightly" release.
+
+on:
+  schedule:
+    - cron: '17 */4 * * *'
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Rebuild even if the upstream nightly has not changed
+        type: boolean
+        required: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: stikcontainer-nightly
+  cancel-in-progress: false
+
+env:
+  UPSTREAM_REPO: LiveContainer/LiveContainer
+  PATCH_BRANCH: stikcontainer
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      build: ${{ steps.compare.outputs.build }}
+      upstream_sha: ${{ steps.upstream.outputs.sha }}
+      upstream_version: ${{ steps.upstream.outputs.version }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Read the upstream nightly
+        id: upstream
+        run: |
+          curl -fsSL -o upstream.ipa "https://github.com/$UPSTREAM_REPO/releases/download/nightly/LiveContainer%2BSideStore.ipa"
+          unzip -p upstream.ipa Payload/LiveContainer.app/Info.plist > Info.plist
+          python3 - <<'EOF' >> "$GITHUB_OUTPUT"
+          import plistlib, re
+          info = plistlib.load(open("Info.plist", "rb"))
+          match = re.search(r"/([0-9a-f]{7,40})\)", info.get("LCVersionInfo", ""))
+          if not match:
+              raise SystemExit("LCVersionInfo has no commit: %r" % info.get("LCVersionInfo"))
+          print("sha=" + match.group(1))
+          print("version=" + info["CFBundleShortVersionString"])
+          EOF
+      - name: Compare with the last StikContainer build
+        id: compare
+        run: |
+          last=$(gh release view nightly -R "$GITHUB_REPOSITORY" --json body -q .body 2>/dev/null | sed -n 's/^upstream: \([0-9a-f]*\).*/\1/p' | head -1)
+          echo "upstream ${{ steps.upstream.outputs.sha }}, last built ${last:-none}"
+          if [ "${{ inputs.force }}" = "true" ] || [ "$last" != "${{ steps.upstream.outputs.sha }}" ]; then
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "build=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    needs: check
+    if: needs.check.outputs.build == 'true'
+    runs-on: xcode-27
+    env:
+      GH_TOKEN: ${{ github.token }}
+      UPSTREAM_SHA: ${{ needs.check.outputs.upstream_sha }}
+    steps:
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: '27.2'
+
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ env.PATCH_BRANCH }}
+          fetch-depth: 0
+
+      - name: Rebase the JIT patch onto the upstream nightly
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add upstream "https://github.com/$UPSTREAM_REPO.git"
+          git fetch --quiet upstream main
+          base=$(git rev-parse --verify "$UPSTREAM_SHA^{commit}")
+          echo "rebasing onto $base"
+          if ! git rebase "$base"; then
+            git rebase --abort
+            echo "::error::The JIT patch no longer applies cleanly to upstream $UPSTREAM_SHA. Rebase the $PATCH_BRANCH branch by hand."
+            exit 1
+          fi
+          git submodule update --init --recursive
+          git log --oneline -5
+
+      - name: Build
+        run: |
+          set -o pipefail
+          xcodebuild archive -archivePath archive -scheme LiveContainer -project LiveContainer.xcodeproj \
+            -sdk iphoneos -arch arm64 -configuration Release | xcpretty
+
+      - name: Package
+        run: |
+          curl -fsSL -o upstream.ipa "https://github.com/$UPSTREAM_REPO/releases/download/nightly/LiveContainer%2BSideStore.ipa"
+          sh scripts/package_ipa.sh archive.xcarchive upstream.ipa "StikContainer+SideStore.ipa"
+
+      - name: Publish the rebased patch branch
+        run: git push --force-with-lease origin "HEAD:$PATCH_BRANCH"
+
+      - name: Publish the nightly release
+        run: |
+          notes=$(printf 'upstream: %s\n\nLiveContainer+SideStore nightly %s (upstream commit %s) with the built-in StikJIT JIT enabler.\n\nUnsigned. Sideload it over an existing LiveContainer with the same Apple ID to update in place.\n' \
+            "$UPSTREAM_SHA" "${{ needs.check.outputs.upstream_version }}" "$UPSTREAM_SHA")
+          gh release delete nightly -R "$GITHUB_REPOSITORY" --cleanup-tag --yes || true
+          gh release create nightly "StikContainer+SideStore.ipa" -R "$GITHUB_REPOSITORY" \
+            --target "$PATCH_BRANCH" --prerelease \
+            --title "StikContainer nightly ${{ needs.check.outputs.upstream_version }} ($UPSTREAM_SHA)" \
+            --notes "$notes"
