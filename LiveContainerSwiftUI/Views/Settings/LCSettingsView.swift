@@ -289,6 +289,11 @@ struct LCSettingsView: View {
                     } label: {
                         Text("lc.settings.dataManagement".loc)
                     }
+                    NavigationLink {
+                        LCBackupView()
+                    } label: {
+                        Text("lc.backup.title".loc)
+                    }
                 }
                 
                 Section {
