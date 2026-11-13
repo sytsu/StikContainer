@@ -480,6 +480,235 @@ private extension Color {
     }
 }
 
+/// Finds AltStore sources from whatever the user has: a source link, an `altstore://` style
+/// link, a web page or list that mentions sources, a GitHub repository, or just words.
+/// There is no central directory of sources, so words are looked up on GitHub and in a
+/// community-kept list, and every candidate is loaded and checked before it is shown.
+enum AltStoreSourceFinder {
+    struct Found: Identifiable, Hashable {
+        let url: URL
+        let source: AltStoreSource
+        var id: URL { url }
+        var iconURL: URL? {
+            source.iconURL ?? source.apps.first(where: { $0.iconURL != nil })?.iconURL
+        }
+        /// The same source is often reachable at more than one address (a branch name and
+        /// HEAD, a mirror): two finds with the same fingerprint are one source.
+        var fingerprint: String {
+            "\(source.identifier ?? source.name)|\(source.apps.count)|\(source.apps.first?.bundleIdentifier ?? "")"
+        }
+    }
+    
+    /// A community-kept list of sources, used when the query is words (or empty).
+    private static let communityListURL = URL(string: "https://raw.githubusercontent.com/victordedomenico/awesome-altstore/main/README.md")!
+    /// File names sources commonly have at the top of a repository.
+    private static let commonFileNames = ["apps.json", "repo.json", "source.json", "altstore.json", "sidestore.json", "altsource.json", "AltStore.json", "app-repo.json"]
+    private static let maxCandidates = 60
+    
+    private static let session: URLSession = {
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = 12
+        config.timeoutIntervalForResource = 25
+        config.httpMaximumConnectionsPerHost = 6
+        return URLSession(configuration: config)
+    }()
+    
+    /// Calls `onFound` for each source as soon as it has been checked.
+    static func find(_ rawQuery: String, onFound: @escaping (Found) async -> Void) async {
+        let query = rawQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        var urls: [URL] = []
+        var words = ""
+        
+        let pasted = links(in: query)
+        if !pasted.isEmpty {
+            // One or more links: each may be a source, a repository, or a page that lists sources.
+            for link in pasted {
+                urls.append(contentsOf: await candidates(from: link))
+            }
+        } else if let repo = repositoryPath(in: query) {
+            urls = await candidatesFromRepository(repo)
+        } else if looksLikeHost(query), let url = URL(string: "https://" + query) {
+            urls = await candidates(from: url)
+        } else {
+            urls = await candidatesFromSearch(query)
+            words = query
+        }
+        
+        await check(unique(urls), matching: words, onFound: onFound)
+    }
+    
+    // MARK: Candidates
+    
+    private static func candidates(from url: URL) async -> [URL] {
+        if let inner = embeddedSourceURL(in: url) {
+            return [inner]
+        }
+        if let host = url.host?.lowercased(), host == "github.com" || host == "www.github.com",
+           let repo = repositoryPath(in: url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))), !url.path.contains("/blob/"), !url.path.contains("/raw/") {
+            return await candidatesFromRepository(repo)
+        }
+        // Either a source itself, or text that mentions sources.
+        guard let (data, _) = try? await session.data(from: url) else { return [] }
+        if (try? AltStoreSourceLoader.decode(from: data, baseURL: url)) != nil {
+            return [url]
+        }
+        guard data.count < 4_000_000, let text = String(data: data, encoding: .utf8) else { return [] }
+        return sourceLinks(in: text, relativeTo: url)
+    }
+    
+    private static func candidatesFromRepository(_ repo: String) async -> [URL] {
+        var found: [URL] = []
+        // The README usually says where the source is.
+        for name in ["README.md", "readme.md", "README"] {
+            guard let url = URL(string: "https://raw.githubusercontent.com/\(repo)/HEAD/\(name)"),
+                  let (data, response) = try? await session.data(from: url),
+                  (response as? HTTPURLResponse)?.statusCode == 200,
+                  let text = String(data: data, encoding: .utf8) else { continue }
+            found.append(contentsOf: sourceLinks(in: text, relativeTo: url))
+            break
+        }
+        for name in commonFileNames {
+            if let url = URL(string: "https://raw.githubusercontent.com/\(repo)/HEAD/\(name)") { found.append(url) }
+        }
+        for name in ["repo.json", "apps.json", "source.json"] {
+            if let url = URL(string: "https://github.com/\(repo)/releases/latest/download/\(name)") { found.append(url) }
+        }
+        return found
+    }
+    
+    private static func candidatesFromSearch(_ query: String) async -> [URL] {
+        var found: [URL] = []
+        // The community list: every source in it is checked, and kept if it matches the words.
+        if let (data, _) = try? await session.data(from: communityListURL), let text = String(data: data, encoding: .utf8) {
+            found.append(contentsOf: sourceLinks(in: text, relativeTo: communityListURL))
+        }
+        guard !query.isEmpty else { return found }
+        // GitHub: repositories about the words and AltStore or SideStore.
+        var components = URLComponents(string: "https://api.github.com/search/repositories")!
+        components.queryItems = [
+            URLQueryItem(name: "q", value: "\(query) altstore OR sidestore in:name,description,topics,readme"),
+            URLQueryItem(name: "sort", value: "stars"),
+            URLQueryItem(name: "per_page", value: "8"),
+        ]
+        struct SearchResponse: Decodable {
+            struct Repo: Decodable { let full_name: String }
+            let items: [Repo]
+        }
+        if let url = components.url, let (data, _) = try? await session.data(from: url),
+           let response = try? JSONDecoder().decode(SearchResponse.self, from: data) {
+            await withTaskGroup(of: [URL].self) { group in
+                for repo in response.items {
+                    group.addTask { await candidatesFromRepository(repo.full_name) }
+                }
+                for await urls in group { found.append(contentsOf: urls) }
+            }
+        }
+        return found
+    }
+    
+    // MARK: Checking
+    
+    /// Load every candidate, a few at a time, and report the ones that really are sources.
+    /// With words to match, a source is kept when its name, or one of its apps, has them.
+    private static func check(_ urls: [URL], matching words: String, onFound: @escaping (Found) async -> Void) async {
+        let terms = words.lowercased().split(whereSeparator: { $0 == " " }).map(String.init)
+        let limited = Array(urls.prefix(maxCandidates))
+        await withTaskGroup(of: Void.self) { group in
+            var next = 0
+            func addNext() {
+                guard next < limited.count else { return }
+                let url = limited[next]
+                next += 1
+                group.addTask {
+                    guard !Task.isCancelled,
+                          let (data, response) = try? await session.data(from: url),
+                          (response as? HTTPURLResponse).map({ (200...299).contains($0.statusCode) }) ?? true,
+                          let source = try? AltStoreSourceLoader.decode(from: data, baseURL: url),
+                          !source.apps.isEmpty, matches(source, url: url, terms: terms) else { return }
+                    await onFound(Found(url: url, source: source))
+                }
+            }
+            for _ in 0..<8 { addNext() }
+            for await _ in group { addNext() }
+        }
+    }
+    
+    private static func matches(_ source: AltStoreSource, url: URL, terms: [String]) -> Bool {
+        guard !terms.isEmpty else { return true }
+        var haystack = source.name.lowercased() + " " + url.absoluteString.lowercased()
+        haystack += " " + (source.subtitle ?? "").lowercased() + " " + (source.description ?? "").lowercased()
+        return terms.allSatisfy { term in
+            haystack.contains(term) || source.apps.contains(where: {
+                $0.name.lowercased().contains(term) || $0.bundleIdentifier.lowercased().contains(term)
+                    || ($0.developerName?.lowercased().contains(term) ?? false)
+            })
+        }
+    }
+    
+    // MARK: Parsing
+    
+    /// `altstore://source?url=…`, `sidestore://source?url=…`, `livecontainer://source?url=…` and the like.
+    private static func embeddedSourceURL(in url: URL) -> URL? {
+        guard let scheme = url.scheme?.lowercased(), scheme != "http", scheme != "https", scheme != "file",
+              let value = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "url" })?.value else {
+            return nil
+        }
+        return URL(string: value)
+    }
+    
+    /// Every link in a piece of text, of any scheme.
+    private static func links(in text: String) -> [URL] {
+        guard let regex = try? NSRegularExpression(pattern: #"[A-Za-z][A-Za-z0-9+.-]*://[^\s"'<>\)\]]+"#) else { return [] }
+        let range = NSRange(text.startIndex..., in: text)
+        return regex.matches(in: text, range: range).compactMap { match in
+            Range(match.range, in: text).flatMap { range in
+                URL(string: String(text[range]).trimmingCharacters(in: CharacterSet(charactersIn: ".,;")))
+            }
+        }
+    }
+    
+    /// Links in a page or a list that could be sources: JSON files, and source links for store apps.
+    private static func sourceLinks(in text: String, relativeTo base: URL) -> [URL] {
+        var found: [URL] = []
+        for link in links(in: text) {
+            if let inner = embeddedSourceURL(in: link) {
+                found.append(inner)
+            } else if let scheme = link.scheme?.lowercased(), scheme == "http" || scheme == "https" {
+                let path = link.path.lowercased()
+                if path.hasSuffix(".json") || link.absoluteString.lowercased().contains("source?url=") {
+                    if let value = URLComponents(url: link, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "url" })?.value,
+                       let inner = URL(string: value) {
+                        found.append(inner)
+                    } else {
+                        found.append(link)
+                    }
+                }
+            }
+        }
+        return found
+    }
+    
+    /// "owner/name", as GitHub writes repositories.
+    private static func repositoryPath(in text: String) -> String? {
+        let parts = text.split(separator: "/", omittingEmptySubsequences: true).map(String.init)
+        guard parts.count >= 2, !text.contains(" "), !text.contains("://") else { return nil }
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_."))
+        guard parts[0].unicodeScalars.allSatisfy(allowed.contains), parts[1].unicodeScalars.allSatisfy(allowed.contains),
+              !parts[0].contains(".") else { return nil }
+        let name = parts[1].hasSuffix(".git") ? String(parts[1].dropLast(4)) : parts[1]
+        return parts[0] + "/" + name
+    }
+    
+    private static func looksLikeHost(_ text: String) -> Bool {
+        !text.contains(" ") && text.contains(".") && !text.hasPrefix(".") && !text.hasSuffix(".")
+    }
+    
+    private static func unique(_ urls: [URL]) -> [URL] {
+        var seen = Set<String>()
+        return urls.filter { seen.insert($0.absoluteString).inserted }
+    }
+}
+
 struct LCSourcesView: View {
     @StateObject private var viewModel = AltStoreSourcesViewModel()
     @State private var errorMessage: String?
@@ -729,6 +958,14 @@ private struct ManageSourcesSheet: View {
     @State private var sourcePendingRemoval: AltStoreSourcesViewModel.SourceItem?
     @FocusState private var isManualFieldFocused: Bool
     
+    @State private var findQuery = ""
+    @State private var findResults: [AltStoreSourceFinder.Found] = []
+    @State private var isFinding = false
+    @State private var didFind = false
+    @State private var findTask: Task<Void, Never>?
+    @State private var addingFound: Set<URL> = []
+    @FocusState private var isFindFieldFocused: Bool
+    
     var body: some View {
         NavigationView {
             List {
@@ -749,6 +986,16 @@ private struct ManageSourcesSheet: View {
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
                                         .textSelection(.enabled)
+                                }
+                            }
+                            .contentShape(Rectangle())
+                            .contextMenu {
+                                Button("lc.sources.copyUrl".loc, systemImage: "doc.on.doc") {
+                                    UIPasteboard.general.string = item.url.absoluteString
+                                    UINotificationFeedbackGenerator().notificationOccurred(.success)
+                                }
+                                Button("lc.sources.removeSource".loc, systemImage: "trash", role: .destructive) {
+                                    sourcePendingRemoval = item
                                 }
                             }
                             .swipeActions(edge: .trailing) {
@@ -790,6 +1037,72 @@ private struct ManageSourcesSheet: View {
                     .padding(.vertical, 4)
                 } header: {
                     Text("lc.sources.manage.manual".loc)
+                }
+                
+                Section {
+                    HStack(spacing: 8) {
+                        TextField("lc.sources.find.placeholder".loc, text: $findQuery)
+                            .autocapitalization(.none)
+                            .disableAutocorrection(true)
+                            .submitLabel(.search)
+                            .focused($isFindFieldFocused)
+                            .onSubmit(startFinding)
+                        if isFinding {
+                            ProgressView()
+                        } else {
+                            Button(action: startFinding) {
+                                Image(systemName: "magnifyingglass")
+                            }
+                            .buttonStyle(.borderless)
+                        }
+                    }
+                    
+                    ForEach(findResults) { found in
+                        HStack(alignment: .center, spacing: 12) {
+                            SourceIconView(url: found.iconURL)
+                                .frame(width: 36, height: 36)
+                                .clipShape(RoundedRectangle(cornerRadius: 8))
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(found.source.name)
+                                    .bold()
+                                    .lineLimit(1)
+                                Text("lc.sources.find.appCount %lld".localizeWithFormat(found.source.apps.count) + " · " + (found.url.host ?? ""))
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                            }
+                            Spacer(minLength: 4)
+                            if viewModel.sources.contains(where: { $0.url == found.url }) {
+                                Image(systemName: "checkmark.circle.fill")
+                                    .foregroundStyle(.green)
+                            } else if addingFound.contains(found.url) {
+                                ProgressView()
+                            } else {
+                                Button("lc.sources.find.add".loc) {
+                                    add(found)
+                                }
+                                .buttonStyle(.bordered)
+                                .buttonBorderShape(.capsule)
+                                .controlSize(.small)
+                            }
+                        }
+                        .contentShape(Rectangle())
+                        .contextMenu {
+                            Button("lc.sources.copyUrl".loc, systemImage: "doc.on.doc") {
+                                UIPasteboard.general.string = found.url.absoluteString
+                            }
+                        }
+                    }
+                    
+                    if didFind, !isFinding, findResults.isEmpty {
+                        Text("lc.sources.find.none".loc)
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                } header: {
+                    Text("lc.sources.find.header".loc)
+                } footer: {
+                    Text("lc.sources.find.footer".loc)
                 }
             }
             .listStyle(.insetGrouped)
@@ -835,6 +1148,36 @@ private struct ManageSourcesSheet: View {
         return nil
     }
     
+    /// Look for sources matching what was typed: a link, a page, a GitHub repository, or words.
+    private func startFinding() {
+        findTask?.cancel()
+        isFindFieldFocused = false
+        let query = findQuery
+        isFinding = true
+        didFind = true
+        findResults = []
+        findTask = Task {
+            await AltStoreSourceFinder.find(query) { found in
+                await MainActor.run {
+                    if !Task.isCancelled, !findResults.contains(where: { $0.url == found.url || $0.fingerprint == found.fingerprint }) {
+                        findResults.append(found)
+                    }
+                }
+            }
+            await MainActor.run {
+                if !Task.isCancelled { isFinding = false }
+            }
+        }
+    }
+    
+    private func add(_ found: AltStoreSourceFinder.Found) {
+        addingFound.insert(found.url)
+        Task {
+            _ = await onAdd(found.url.absoluteString)
+            addingFound.remove(found.url)
+        }
+    }
+    
     private func attemptManualAdd() {
         let trimmed = manualSourceValue.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, !isAddingManual else { return }
@@ -860,6 +1203,22 @@ private struct AltStoreSourceSectionView: View {
     let onRemove: () -> Void
     let toggleExpanded: () -> Void
     
+    /// Apps are added to the list a page at a time as the user scrolls, so a source with
+    /// thousands of apps shows all of them without building thousands of rows at once.
+    private static let pageSize = 50
+    @State private var visibleCount = AltStoreSourceSectionView.pageSize
+    
+    private func copySourceURL() {
+        UIPasteboard.general.string = item.url.absoluteString
+        UINotificationFeedbackGenerator().notificationOccurred(.success)
+    }
+    
+    private func showMoreApps() {
+        if visibleCount < filteredApps.count {
+            visibleCount = min(filteredApps.count, visibleCount + Self.pageSize)
+        }
+    }
+    
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .center, spacing: 12) {
@@ -873,13 +1232,21 @@ private struct AltStoreSourceSectionView: View {
                         Text(item.source?.name ?? item.displayName)
                             .font(.system(.title2).bold())
                     }
+                    .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                // Long-press the source's name for its URL.
+                .contextMenu {
+                    Button("lc.sources.copyUrl".loc, systemImage: "doc.on.doc", action: copySourceURL)
+                    Button("lc.sources.refresh".loc, systemImage: "arrow.clockwise", action: onRefresh)
+                    Button("lc.sources.removeSource".loc, systemImage: "trash", role: .destructive, action: onRemove)
+                }
                 Spacer()
                 if item.isLoading {
                     ProgressView()
                 } else {
                     Menu {
+                        Button("lc.sources.copyUrl".loc, systemImage: "doc.on.doc", action: copySourceURL)
                         Button("lc.sources.refresh".loc, systemImage: "arrow.clockwise", action: onRefresh)
                         Button("lc.sources.removeSource".loc, systemImage: "trash", role: .destructive, action: onRemove)
                     } label: {
@@ -917,8 +1284,8 @@ private struct AltStoreSourceSectionView: View {
                         .fill(Color(uiColor: UIColor.secondarySystemBackground))
                 )
             } else if let source = item.source, isExpanded || isFiltering {
-                VStack(spacing: 12) {
-                    ForEach(filteredApps[0..<min(50, filteredApps.count)]) { app in
+                LazyVStack(spacing: 12) {
+                    ForEach(filteredApps.prefix(visibleCount)) { app in
                         LCSourceAppBanner(app: app, source: source, installAction: onInstall)
                     }
                     if filteredApps.isEmpty {
@@ -928,12 +1295,16 @@ private struct AltStoreSourceSectionView: View {
                                 .foregroundStyle(.secondary)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                         }
-                    } else if filteredApps.count > 50 {
-                        Text("lc.sources.section.tooManyApps".loc)
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                    } else if visibleCount < filteredApps.count {
+                        // Reaching the end of the page brings in the next one.
+                        ProgressView()
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 8)
+                            .onAppear(perform: showMoreApps)
                     }
+                }
+                .onChange(of: filteredApps.count) { _ in
+                    visibleCount = Self.pageSize
                 }
             } else if item.isLoading {
                 ProgressView("lc.sources.loading".loc)
