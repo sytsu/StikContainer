@@ -28933,6 +28933,17 @@
         }
       }
     },
+    "lc.sources.copyUrl" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Copy Source URL"
+          }
+        }
+      }
+    },
     "lc.sources.empty" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -29404,6 +29415,72 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "本項目不包含下載網址。"
+          }
+        }
+      }
+    },
+    "lc.sources.find.add" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Add"
+          }
+        }
+      }
+    },
+    "lc.sources.find.appCount %lld" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld apps"
+          }
+        }
+      }
+    },
+    "lc.sources.find.footer" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Paste a source link, a page or list that mentions sources, or a GitHub repository (owner/name). Words are looked up on GitHub and in a community list. Leave it empty to browse the community list."
+          }
+        }
+      }
+    },
+    "lc.sources.find.header" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Find Sources"
+          }
+        }
+      }
+    },
+    "lc.sources.find.none" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No sources found."
+          }
+        }
+      }
+    },
+    "lc.sources.find.placeholder" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Link, page, owner/repo, or words"
           }
         }
       }
