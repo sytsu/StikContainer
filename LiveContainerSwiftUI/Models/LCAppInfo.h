@@ -29,6 +29,8 @@ typedef NS_ENUM(NSInteger, MultitaskSpecified){
 @property bool isLocked;
 @property bool isHidden;
 @property bool doSymlinkInbox;
+// Restoring a backup leaves this app, its settings and all its data as they are.
+@property bool keepOnRestore;
 @property bool hideLiveContainer;
 @property bool dontLoadTweakLoader;
 @property bool dontInjectTweakLoader;

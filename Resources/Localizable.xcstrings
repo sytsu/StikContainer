@@ -33083,6 +33083,105 @@
           }
         }
       }
+    },
+    "lc.appSettings.keepOnRestore" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Keep During Backup Restore"
+          }
+        }
+      }
+    },
+    "lc.appSettings.keepOnRestoreDesc" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Restoring a backup leaves this app exactly as it is: the app, its settings and all of its data folders and app groups. The backup's copy of it is not put back."
+          }
+        }
+      }
+    },
+    "lc.backup.restoreHeader" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "When Restoring"
+          }
+        }
+      }
+    },
+    "lc.backup.keepOtherApps" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Keep Apps Not in the Backup"
+          }
+        }
+      }
+    },
+    "lc.backup.keepOtherAppsOnFooter" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Apps that aren't in the backup stay as they are. Apps that are in it are replaced, unless Keep During Backup Restore is on for them."
+          }
+        }
+      }
+    },
+    "lc.backup.keepOtherAppsOffFooter" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Apps that aren't in the backup are deleted along with their data folders, so only the backup's apps remain. Apps with Keep During Backup Restore on are never deleted. A backup without apps deletes nothing."
+          }
+        }
+      }
+    },
+    "lc.backup.restoreConfirm.removeMessage %@" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Everything in “%@” is put back. Apps that aren't in the backup are deleted with their data. This can't be undone."
+          }
+        }
+      }
+    },
+    "lc.backup.restored.kept %lld" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld apps were kept as they were."
+          }
+        }
+      }
+    },
+    "lc.backup.restored.removed %lld" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld apps that weren't in the backup were deleted."
+          }
+        }
+      }
     }
   },
   "version" : "1.0"

@@ -558,7 +558,16 @@
 - (void)setDoSymlinkInbox:(bool)doSymlinkInbox {
     _info[@"doSymlinkInbox"] = [NSNumber numberWithBool:doSymlinkInbox];
     [self save];
-    
+
+}
+
+// Read by LCBackupManager straight from LCAppInfo.plist, so the key must stay the same.
+- (bool)keepOnRestore {
+    return [_info[@"LCKeepOnRestore"] boolValue];
+}
+- (void)setKeepOnRestore:(bool)keepOnRestore {
+    _info[@"LCKeepOnRestore"] = [NSNumber numberWithBool:keepOnRestore];
+    [self save];
 }
 
 - (bool)hideLiveContainer {

@@ -379,6 +379,14 @@ struct LCAppSettingsView: View {
             } footer: {
                 Text("lc.appSettings.fixFilePickerDesc".loc)
             }
+
+            Section {
+                Toggle(isOn: $model.uiKeepOnRestore) {
+                    Text("lc.appSettings.keepOnRestore".loc)
+                }
+            } footer: {
+                Text("lc.appSettings.keepOnRestoreDesc".loc)
+            }
             
             Section {
                 Button("lc.appSettings.forceSign".loc) {

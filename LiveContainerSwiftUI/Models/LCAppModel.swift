@@ -51,6 +51,11 @@ class LCAppModel: ObservableObject, Hashable {
             appInfo.doSymlinkInbox = uiDoSymlinkInbox
         }
     }
+    @Published var uiKeepOnRestore : Bool {
+        didSet {
+            appInfo.keepOnRestore = uiKeepOnRestore
+        }
+    }
     @Published var uiUseLCBundleId : Bool {
         didSet {
             appInfo.doUseLCBundleId = uiUseLCBundleId
@@ -188,6 +193,7 @@ class LCAppModel: ObservableObject, Hashable {
         self.uiContainers = appInfo.containers
         self.uiTweakFolder = appInfo.tweakFolder
         self.uiDoSymlinkInbox = appInfo.doSymlinkInbox
+        self.uiKeepOnRestore = appInfo.keepOnRestore
         self.uiOrientationLock = appInfo.orientationLock
         self.uiIsMultitaskModeSpecificed = appInfo.multitaskSpecified
         self.uiUseLCBundleId = appInfo.doUseLCBundleId
@@ -562,6 +568,7 @@ class LCAppModel: ObservableObject, Hashable {
         
         toAppInfo.spoofSDKVersion = fromApp.appInfo.spoofSDKVersion
         toAppInfo.doSymlinkInbox = fromApp.appInfo.doSymlinkInbox
+        toAppInfo.keepOnRestore = fromApp.appInfo.keepOnRestore
 
         toAppInfo.selectedLanguage = fromApp.appInfo.selectedLanguage
 

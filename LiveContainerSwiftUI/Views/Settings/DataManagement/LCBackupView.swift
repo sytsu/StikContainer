@@ -63,6 +63,49 @@ enum LCBackupError: LocalizedError {
     }
 }
 
+/// What belongs to a set of apps, by the name each item has in its folder of the storage.
+fileprivate struct LCRestoreOwnership {
+    var appFolders = Set<String>()
+    var bundleIDs = Set<String>()
+    var containers = Set<String>()
+    var appGroups = Set<String>()
+    var tweakFolders = Set<String>()
+
+    /// `withEntitlements` also reads each app's app groups from its code signature.
+    init(_ apps: [LCBackupManager.InstalledApp], withEntitlements: Bool) {
+        for app in apps {
+            appFolders.insert(app.folder)
+            bundleIDs.formUnion(app.bundleIDs)
+            containers.formUnion(app.containers)
+            if let tweak = app.tweakFolder { tweakFolders.insert(tweak) }
+            if withEntitlements, let executable = app.executable {
+                appGroups.formUnion(Self.appGroups(of: app.bundle.appendingPathComponent(executable)))
+            }
+        }
+    }
+
+    func owns(_ item: String, in folder: String) -> Bool {
+        switch folder {
+        case "Applications": return appFolders.contains(item)
+        case "Data/Application": return containers.contains(item)
+        // Groups named after the app count as its own even when the signature does not list them.
+        case "Data/AppGroup": return appGroups.contains(item) || bundleIDs.contains { item == "group.\($0)" || item.hasPrefix("group.\($0).") }
+        case "Tweaks": return tweakFolders.contains(item)
+        default: return false
+        }
+    }
+
+    private static func appGroups(of executable: URL) -> Set<String> {
+        guard FileManager.default.fileExists(atPath: executable.path),
+              let xml = getExecutableEntitlementXML(executable.path),
+              let data = xml.data(using: .utf8),
+              let entitlements = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any] else {
+            return []
+        }
+        return Set(entitlements["com.apple.security.application-groups"] as? [String] ?? [])
+    }
+}
+
 // MARK: - Making and restoring
 
 /// A backup is one Apple Archive (LZFSE) file. Inside, paths keep the names of the places they
@@ -203,10 +246,27 @@ enum LCBackupManager {
 
     // MARK: Restore
 
+    struct RestoreResult {
+        var manifest: LCBackupManifest
+        /// Apps left exactly as they were because "Keep During Backup Restore" is on for them.
+        var keptApps: Int
+        /// Apps deleted because they were not in the backup.
+        var removedApps: Int
+    }
+
     /// Unpacks the backup next to the live data, then moves each app, data container and tweak
-    /// into place, replacing what has the same name and leaving everything else alone.
-    static func restore(from backup: URL) throws -> LCBackupManifest {
+    /// into place, replacing what has the same name.
+    /// - Apps with "Keep During Backup Restore" on, their settings and all their data are never
+    ///   replaced; the backup's copy of them is left out.
+    /// - With `keepOtherApps`, apps that are not in the backup stay. Without it, they are deleted
+    ///   with their data folders, unless they are kept as above.
+    static func restore(from backup: URL, keepOtherApps: Bool) throws -> RestoreResult {
         let fm = FileManager.default
+        let liveRoots = [LCPath.docPath] + (sharedRoot.map { [$0] } ?? [])
+        // Worked out before anything changes.
+        let keptApps = installedApps(in: liveRoots).filter(\.keepOnRestore)
+        var kept = LCRestoreOwnership(keptApps, withEntitlements: true)
+
         let staging = LCPath.docPath.appendingPathComponent(".lcbackup-restore-" + UUID().uuidString)
         try fm.createDirectory(at: staging, withIntermediateDirectories: true)
         defer { try? fm.removeItem(at: staging) }
@@ -239,13 +299,41 @@ enum LCBackupManager {
         }
         guard manifest.formatVersion <= 1 else { throw LCBackupError.newerFormat }
 
-        let folders = ["Applications", "Data/Application", "Data/AppGroup", "Tweaks"]
         // The app's own storage is "Documents" in every install; the shared one is "LiveContainer".
-        try merge(folders + ["StikJIT", "SideStore"], from: staging.appendingPathComponent(LCPath.docPath.lastPathComponent), into: LCPath.docPath)
+        let ownBackup = staging.appendingPathComponent(LCPath.docPath.lastPathComponent)
         let sharedBackup = staging.appendingPathComponent("LiveContainer")
+        let backupApps = installedApps(in: [ownBackup, sharedBackup])
+
+        // The backup's own copy of a kept app stays out, and so does that copy's data.
+        for app in backupApps where kept.appFolders.contains(app.folder) || !kept.bundleIDs.isDisjoint(with: app.bundleIDs) {
+            kept.appFolders.insert(app.folder)
+            kept.containers.formUnion(app.containers)
+        }
+
+        let folders = ["Applications", "Data/Application", "Data/AppGroup", "Tweaks"]
+        try merge(folders + ["StikJIT", "SideStore"], from: ownBackup, into: LCPath.docPath, keeping: kept)
         if fm.fileExists(atPath: sharedBackup.path) {
             // Without an app group on this install, shared apps become private ones rather than being lost.
-            try merge(folders, from: sharedBackup, into: sharedRoot ?? LCPath.docPath)
+            try merge(folders, from: sharedBackup, into: sharedRoot ?? LCPath.docPath, keeping: kept)
+        }
+
+        // Only a backup that has apps says which apps should be there.
+        var removedApps = 0
+        if !keepOtherApps && manifest.includesApps {
+            let inBackup = Set(backupApps.map(\.folder))
+            let remaining = installedApps(in: liveRoots)
+            let doomed = remaining.filter { !inBackup.contains($0.folder) && !kept.appFolders.contains($0.folder) }
+            // Data an app that stays still uses is never deleted with another one.
+            let stillUsed = LCRestoreOwnership(remaining.filter { app in !doomed.contains { $0.bundle == app.bundle } }, withEntitlements: false)
+            for app in doomed {
+                guard (try? fm.removeItem(at: app.bundle)) != nil else { continue }
+                removedApps += 1
+                for container in app.containers where !stillUsed.containers.contains(container) && !kept.containers.contains(container) {
+                    for root in liveRoots {
+                        try? fm.removeItem(at: root.appendingPathComponent("Data/Application").appendingPathComponent(container))
+                    }
+                }
+            }
         }
 
         if manifest.includesSettings {
@@ -254,17 +342,17 @@ enum LCBackupManager {
                 readPreferences(meta.appendingPathComponent("GroupPreferences.plist"), into: defaults)
             }
         }
-        return manifest
+        return RestoreResult(manifest: manifest, keptApps: keptApps.count, removedApps: removedApps)
     }
 
-    private static func merge(_ folders: [String], from source: URL, into destination: URL) throws {
+    private static func merge(_ folders: [String], from source: URL, into destination: URL, keeping kept: LCRestoreOwnership) throws {
         let fm = FileManager.default
         for folder in folders {
             let from = source.appendingPathComponent(folder)
             guard let items = try? fm.contentsOfDirectory(atPath: from.path) else { continue }
             let to = destination.appendingPathComponent(folder)
             try fm.createDirectory(at: to, withIntermediateDirectories: true)
-            for item in items {
+            for item in items where !kept.owns(item, in: folder) {
                 let target = to.appendingPathComponent(item)
                 if fm.fileExists(atPath: target.path) || (try? target.checkResourceIsReachable()) == true {
                     try fm.removeItem(at: target)
@@ -281,6 +369,49 @@ enum LCBackupManager {
             defaults.set(value, forKey: key)
         }
         defaults.synchronize()
+    }
+
+    /// An app in an `Applications` folder, read from its plists alone.
+    fileprivate struct InstalledApp {
+        var bundle: URL
+        var folder: String { bundle.lastPathComponent }
+        var executable: String?
+        var bundleIDs: Set<String>
+        /// Folder names in `Data/Application`: every container of the app.
+        var containers: Set<String>
+        /// The first part of the app's tweak folder in `Tweaks`.
+        var tweakFolder: String?
+        var keepOnRestore: Bool
+    }
+
+    fileprivate static func installedApps(in roots: [URL]) -> [InstalledApp] {
+        let fm = FileManager.default
+        var apps: [InstalledApp] = []
+        for root in roots {
+            let applications = root.appendingPathComponent("Applications")
+            for folder in (try? fm.contentsOfDirectory(atPath: applications.path)) ?? [] where folder.hasSuffix(".app") {
+                let bundle = applications.appendingPathComponent(folder)
+                let infoPlist = NSDictionary(contentsOf: bundle.appendingPathComponent("Info.plist")) as? [String: Any] ?? [:]
+                // Apps from before LCAppInfo.plist keep these settings in Info.plist.
+                let state = infoPlist.merging(NSDictionary(contentsOf: bundle.appendingPathComponent("LCAppInfo.plist")) as? [String: Any] ?? [:]) { $1 }
+                // An app using LiveContainer's bundle ID keeps its own in LCOrignalBundleIdentifier.
+                var bundleIDs = Set<String>()
+                if let id = (state["LCOrignalBundleIdentifier"] ?? state["CFBundleIdentifier"]) as? String,
+                   !id.isEmpty, id != Bundle.main.bundleIdentifier {
+                    bundleIDs.insert(id)
+                }
+                var containers = Set((state["LCContainers"] as? [[String: Any]] ?? []).compactMap { $0["folderName"] as? String })
+                if let dataUUID = state["LCDataUUID"] as? String { containers.insert(dataUUID) }
+                let tweakFolder = (state["LCTweakFolder"] as? String)?.split(separator: "/").first.map(String.init)
+                apps.append(InstalledApp(bundle: bundle,
+                                         executable: infoPlist["CFBundleExecutable"] as? String,
+                                         bundleIDs: bundleIDs,
+                                         containers: containers,
+                                         tweakFolder: tweakFolder,
+                                         keepOnRestore: state["LCKeepOnRestore"] as? Bool ?? false))
+            }
+        }
+        return apps
     }
 
     // MARK: Files
@@ -323,7 +454,8 @@ struct LCBackupView: View {
     @State private var workingText = ""
     @State private var errorText: String?
     @State private var pendingRestore: LCBackupFile?
-    @State private var restored: LCBackupManifest?
+    @State private var restored: LCBackupManager.RestoreResult?
+    @AppStorage("LCBackupKeepOtherApps") private var keepOtherApps = true
     @State private var sharing: LCBackupFile?
     @State private var renaming: LCBackupFile?
     @State private var renameText = ""
@@ -363,6 +495,14 @@ struct LCBackupView: View {
                 Text("lc.backup.newHeader".loc)
             } footer: {
                 Text("lc.backup.newFooter".loc)
+            }
+
+            Section {
+                Toggle("lc.backup.keepOtherApps".loc, isOn: $keepOtherApps)
+            } header: {
+                Text("lc.backup.restoreHeader".loc)
+            } footer: {
+                Text((keepOtherApps ? "lc.backup.keepOtherAppsOnFooter" : "lc.backup.keepOtherAppsOffFooter").loc)
             }
 
             Section {
@@ -452,13 +592,13 @@ struct LCBackupView: View {
             }
             Button("lc.common.cancel".loc, role: .cancel) { pendingRestore = nil }
         } message: {
-            Text("lc.backup.restoreConfirm.message %@".localizeWithFormat(pendingRestore?.name ?? ""))
+            Text((keepOtherApps ? "lc.backup.restoreConfirm.message %@" : "lc.backup.restoreConfirm.removeMessage %@").localizeWithFormat(pendingRestore?.name ?? ""))
         }
         .alert("lc.backup.restored.title".loc, isPresented: Binding(get: { restored != nil }, set: { if !$0 { restored = nil } })) {
             // The app list and settings were read at launch: start again to show what was restored.
             Button("lc.backup.restored.quit".loc) { exit(0) }
         } message: {
-            Text("lc.backup.restored.message %lld %lld".localizeWithFormat(restored?.appCount ?? 0, restored?.containerCount ?? 0))
+            Text(restoredMessage)
         }
         .alert("lc.common.rename".loc, isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
             TextField("lc.backup.namePlaceholder".loc, text: $renameText)
@@ -503,19 +643,32 @@ struct LCBackupView: View {
         }
     }
 
+    private var restoredMessage: String {
+        guard let restored else { return "" }
+        var lines = ["lc.backup.restored.message %lld %lld".localizeWithFormat(restored.manifest.appCount, restored.manifest.containerCount)]
+        if restored.keptApps > 0 {
+            lines.append("lc.backup.restored.kept %lld".localizeWithFormat(restored.keptApps))
+        }
+        if restored.removedApps > 0 {
+            lines.append("lc.backup.restored.removed %lld".localizeWithFormat(restored.removedApps))
+        }
+        return lines.joined(separator: "\n\n")
+    }
+
     private func restore(_ backup: LCBackupFile) {
         isWorking = true
         workingText = "lc.backup.restoring".loc
+        let keepOtherApps = keepOtherApps
         Task.detached(priority: .userInitiated) {
             var failure: String?
-            var manifest: LCBackupManifest?
+            var outcome: LCBackupManager.RestoreResult?
             do {
-                manifest = try LCBackupManager.restore(from: backup.url)
+                outcome = try LCBackupManager.restore(from: backup.url, keepOtherApps: keepOtherApps)
             } catch {
                 failure = error.localizedDescription
             }
             let message = failure
-            let result = manifest
+            let result = outcome
             await MainActor.run {
                 isWorking = false
                 errorText = message
