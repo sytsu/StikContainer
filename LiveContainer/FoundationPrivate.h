@@ -21,6 +21,8 @@
 - (void)_kill:(int)arg1;
 - (void)setRequestCancellationBlock:(void(^)(NSUUID *uuid, NSError *error))callback;
 - (void)setRequestInterruptionBlock:(void(^)(NSUUID *))callback;
+// Used by the built-in JIT helper (LCSharedUtils.m).
+- (void)setRequestCompletionBlock:(void(^)(NSUUID *uuid, NSArray *items))callback;
 - (void)_hostDidEnterBackgroundNote:(NSNotification *)note;
 - (void)_hostWillResignActiveNote:(NSNotification *)note;
 @end

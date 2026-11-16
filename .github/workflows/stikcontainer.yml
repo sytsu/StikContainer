@@ -85,8 +85,12 @@ jobs:
           git remote add upstream "https://github.com/$UPSTREAM_REPO.git"
           git fetch --quiet upstream main
           base=$(git rev-parse --verify "$UPSTREAM_SHA^{commit}")
-          echo "rebasing onto $base"
-          if ! git rebase "$base"; then
+          # Replay only the fork's own commits, which start with the design doc. A plain
+          # rebase would also replay old upstream commits whenever upstream rewrites its history.
+          first=$(git log --format=%H --grep='^Add built-in JIT design doc$' -n 1 HEAD)
+          [ -n "$first" ] || { echo "::error::Could not find the fork's first commit"; exit 1; }
+          echo "rebasing $(git rev-list --count "$first^..HEAD") fork commits onto $base"
+          if ! git rebase --onto "$base" "$first^"; then
             git rebase --abort
             echo "::error::The JIT patch no longer applies cleanly to upstream $UPSTREAM_SHA. Rebase the $PATCH_BRANCH branch by hand."
             exit 1
