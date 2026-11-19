@@ -1,16 +1,34 @@
-name: StikContainer nightly
+name: StikContainer builds
 
-# Rebuilds StikContainer whenever LiveContainer publishes a new nightly:
-# the JIT patch is rebased onto the exact commit that nightly was built from,
-# then built and published as this repo's "nightly" release.
+# Rebuilds StikContainer+SideStore.ipa whenever one of its inputs publishes a new release:
+#
+#   LiveContainer+SideStore nightly  -> this repo's "nightly" release (prerelease)
+#   LiveContainer+SideStore stable   -> this repo's "stable" release (marked Latest)
+#   StikJIT (StikDebug/StikJIT)      -> both, with the new prebuilt StikJIT.xcframework
+#
+# Each build rebases the fork's own commits onto the exact upstream commit that release was
+# built from, builds it, and copies the built-in SideStore pieces from that same upstream IPA.
+# The release notes start with "upstream:", "upstream_version:" and "stikjit:" lines, which the
+# next run compares against to decide whether anything changed.
+#
+# A StikJIT update is committed to the patch branch by the nightly build once it has built.
+# The patch is tried on Ubuntu before any macOS runner starts. If it doesn't apply to a stable
+# release (stable can lag the nightly by months), the stable build is skipped with a warning
+# until upstream's next stable release. If it doesn't apply to the nightly, the run fails so
+# the patch branch can be rebased by hand.
 
 on:
   schedule:
     - cron: '17 */4 * * *'
   workflow_dispatch:
     inputs:
+      channel:
+        description: Which build to check
+        type: choice
+        options: [both, nightly, stable]
+        default: both
       force:
-        description: Rebuild even if the upstream nightly has not changed
+        description: Rebuild even if nothing upstream has changed
         type: boolean
         required: false
 
@@ -18,55 +36,203 @@ permissions:
   contents: write
 
 concurrency:
-  group: stikcontainer-nightly
+  group: stikcontainer-builds
   cancel-in-progress: false
 
 env:
   UPSTREAM_REPO: LiveContainer/LiveContainer
+  STIKJIT_REPO: StikDebug/StikJIT
   PATCH_BRANCH: stikcontainer
+  IPA_NAME: StikContainer+SideStore.ipa
 
 jobs:
   check:
     runs-on: ubuntu-latest
     outputs:
-      build: ${{ steps.compare.outputs.build }}
-      upstream_sha: ${{ steps.upstream.outputs.sha }}
-      upstream_version: ${{ steps.upstream.outputs.version }}
+      matrix: ${{ steps.plan.outputs.matrix }}
+      nightly_conflict: ${{ steps.plan.outputs.nightly_conflict }}
     env:
       GH_TOKEN: ${{ github.token }}
+      CHANNEL: ${{ inputs.channel || 'both' }}
+      FORCE: ${{ inputs.force || false }}
     steps:
-      - name: Read the upstream nightly
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ env.PATCH_BRANCH }}
+          fetch-depth: 0
+
+      - name: Read the upstream releases
         id: upstream
         run: |
-          curl -fsSL -o upstream.ipa "https://github.com/$UPSTREAM_REPO/releases/download/nightly/LiveContainer%2BSideStore.ipa"
-          unzip -p upstream.ipa Payload/LiveContainer.app/Info.plist > Info.plist
-          python3 - <<'EOF' >> "$GITHUB_OUTPUT"
-          import plistlib, re
-          info = plistlib.load(open("Info.plist", "rb"))
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/upstream-ipas"
+
+          # LiveContainer+SideStore nightly: its Info.plist names the commit it was built from.
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/upstream-ipas/nightly.ipa" \
+            "https://github.com/$UPSTREAM_REPO/releases/download/nightly/LiveContainer%2BSideStore.ipa"
+          unzip -p "$RUNNER_TEMP/upstream-ipas/nightly.ipa" Payload/LiveContainer.app/Info.plist > "$RUNNER_TEMP/Info.plist"
+          python3 - "$RUNNER_TEMP/Info.plist" <<'EOF' >> "$GITHUB_OUTPUT"
+          import plistlib, re, sys
+          info = plistlib.load(open(sys.argv[1], "rb"))
           match = re.search(r"/([0-9a-f]{7,40})\)", info.get("LCVersionInfo", ""))
           if not match:
               raise SystemExit("LCVersionInfo has no commit: %r" % info.get("LCVersionInfo"))
-          print("sha=" + match.group(1))
-          print("version=" + info["CFBundleShortVersionString"])
+          print("nightly_sha=" + match.group(1))
+          print("nightly_version=" + info["CFBundleShortVersionString"])
           EOF
-      - name: Compare with the last StikContainer build
-        id: compare
+
+          # Newest stable LiveContainer release that ships LiveContainer+SideStore.ipa.
+          stable=$(gh api "repos/$UPSTREAM_REPO/releases?per_page=30" --jq \
+            '[.[] | select((.draft or .prerelease) | not) | select(any(.assets[]; .name == "LiveContainer+SideStore.ipa"))][0].tag_name // ""')
+          echo "stable_tag=$stable" >> "$GITHUB_OUTPUT"
+
+          # Newest StikJIT release that ships the prebuilt framework.
+          stikjit=$(gh api "repos/$STIKJIT_REPO/releases?per_page=10" --jq \
+            '[.[] | select((.draft or .prerelease) | not) | select(any(.assets[]; .name == "StikJIT.xcframework.zip"))][0].tag_name // ""')
+          echo "stikjit_tag=$stikjit" >> "$GITHUB_OUTPUT"
+
+          cat "$GITHUB_OUTPUT"
+
+      - name: Decide what to build
+        id: plan
+        env:
+          NIGHTLY_SHA: ${{ steps.upstream.outputs.nightly_sha }}
+          NIGHTLY_VERSION: ${{ steps.upstream.outputs.nightly_version }}
+          STABLE_TAG: ${{ steps.upstream.outputs.stable_tag }}
+          STIKJIT_TAG: ${{ steps.upstream.outputs.stikjit_tag }}
         run: |
-          last=$(gh release view nightly -R "$GITHUB_REPOSITORY" --json body -q .body 2>/dev/null | sed -n 's/^upstream: \([0-9a-f]*\).*/\1/p' | head -1)
-          echo "upstream ${{ steps.upstream.outputs.sha }}, last built ${last:-none}"
-          if [ "${{ inputs.force }}" = "true" ] || [ "$last" != "${{ steps.upstream.outputs.sha }}" ]; then
-            echo "build=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "build=false" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add upstream "https://github.com/$UPSTREAM_REPO.git"
+          git fetch --quiet --no-tags upstream main
+          # The rebase rewrites these scripts, so run copies of them.
+          cp -R scripts/stikcontainer "$RUNNER_TEMP/sc"
+          sc="$RUNNER_TEMP/sc"
+
+          bundled=$("$sc/stikjit_version.py")
+          stikjit_update=""
+          if [ -z "$STIKJIT_TAG" ]; then
+            echo "::warning::Could not find a StikJIT release with StikJIT.xcframework.zip; keeping the bundled StikJIT $bundled"
+          elif "$sc/stikjit_version.py" --newer "$STIKJIT_TAG" "$bundled"; then
+            stikjit_update=$STIKJIT_TAG
+          fi
+          stikjit=${stikjit_update:-$bundled}
+
+          matrix='[]'
+          nightly_conflict=false
+          summary="$RUNNER_TEMP/summary.md"
+          printf '| Build | Upstream | StikJIT | Result |\n|---|---|---|---|\n' > "$summary"
+
+          # consider <channel> <upstream commit> <upstream version>
+          consider() {
+            local channel=$1 version=$3 base body last_upstream last_stikjit reason status
+            if ! base=$(git rev-parse --quiet --verify "$2^{commit}"); then
+              echo "::error::Upstream commit $2 for the $channel build is not on $UPSTREAM_REPO main or its tag"
+              [ "$channel" = nightly ] && nightly_conflict=true
+              return
+            fi
+            body=$(gh release view "$channel" -R "$GITHUB_REPOSITORY" --json body -q .body 2>/dev/null || true)
+            last_upstream=$(printf '%s\n' "$body" | sed -n 's/^upstream: \([0-9a-f]\{7,40\}\).*/\1/p' | head -1)
+            last_stikjit=$(printf '%s\n' "$body" | sed -n 's/^stikjit: \([^ ]*\).*/\1/p' | head -1)
+            # Builds from before StikJIT was tracked carry the framework the branch bundles.
+            if [ -n "$last_upstream" ] && [ -z "$last_stikjit" ]; then last_stikjit=$bundled; fi
+
+            reason=""
+            if [ "$FORCE" = true ]; then
+              reason="forced"
+            elif [ -z "$last_upstream" ] || [ "${base#"$last_upstream"}" = "$base" ]; then
+              reason="upstream ${last_upstream:-none} -> ${base:0:7}"
+            elif ! "$sc/stikjit_version.py" --same "$last_stikjit" "$stikjit"; then
+              reason="StikJIT $last_stikjit -> $stikjit"
+            fi
+            if [ -z "$reason" ]; then
+              echo "$channel: up to date ($version, ${base:0:7}, StikJIT $stikjit)"
+              echo "| $channel | $version (${base:0:7}) | $stikjit | up to date |" >> "$summary"
+              return
+            fi
+            echo "$channel: build needed: $reason"
+
+            # Try the patch here, so a release it doesn't fit costs no macOS runner.
+            git checkout --quiet --force --detach "$PATCH_BRANCH"
+            status=0
+            "$sc/prepare_sources.sh" "$base" > "$RUNNER_TEMP/trial.log" 2>&1 || status=$?
+            git checkout --quiet --force --detach "$PATCH_BRANCH"
+            if [ "$status" -ne 0 ]; then
+              cat "$RUNNER_TEMP/trial.log"
+              if [ "$status" -ne 2 ]; then exit "$status"; fi
+              if [ "$channel" = nightly ]; then
+                echo "::error::The StikContainer patch no longer applies to the LiveContainer nightly $version ($base). Rebase the $PATCH_BRANCH branch by hand."
+                nightly_conflict=true
+              else
+                echo "::warning::The StikContainer patch does not apply to LiveContainer $version ($base). The stable build waits for upstream's next stable release."
+              fi
+              echo "| $channel | $version (${base:0:7}) | $stikjit | patch does not apply |" >> "$summary"
+              return
+            fi
+
+            echo "| $channel | $version (${base:0:7}) | $stikjit | building ($reason) |" >> "$summary"
+            matrix=$(jq -c --arg channel "$channel" --arg base "$base" --arg version "$version" \
+              --arg stikjit "$stikjit" --arg stikjit_update "$stikjit_update" \
+              '. + [{channel: $channel, base: $base, version: $version, stikjit: $stikjit, stikjit_update: $stikjit_update}]' <<<"$matrix")
+          }
+
+          if [ "$CHANNEL" != stable ]; then
+            consider nightly "$NIGHTLY_SHA" "$NIGHTLY_VERSION"
+          fi
+          if [ "$CHANNEL" != nightly ]; then
+            if [ -z "$STABLE_TAG" ]; then
+              echo "::warning::Could not find a stable LiveContainer release with LiveContainer+SideStore.ipa"
+            else
+              git fetch --quiet --no-tags upstream "refs/tags/$STABLE_TAG:refs/upstream-tags/$STABLE_TAG"
+              consider stable "refs/upstream-tags/$STABLE_TAG" "$STABLE_TAG"
+              if jq -e 'any(.[]; .channel == "stable")' <<<"$matrix" >/dev/null; then
+                curl -fsSL --retry 3 -o "$RUNNER_TEMP/upstream-ipas/stable.ipa" \
+                  "https://github.com/$UPSTREAM_REPO/releases/download/$STABLE_TAG/LiveContainer%2BSideStore.ipa"
+              fi
+            fi
           fi
 
-  build:
+          cat "$summary" >> "$GITHUB_STEP_SUMMARY"
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          echo "nightly_conflict=$nightly_conflict" >> "$GITHUB_OUTPUT"
+          echo "matrix: $matrix"
+
+      - name: Keep the upstream IPAs for the build
+        if: steps.plan.outputs.matrix != '[]'
+        uses: actions/upload-artifact@v7
+        with:
+          name: upstream-ipas
+          path: ${{ runner.temp }}/upstream-ipas
+          retention-days: 1
+
+  nightly-patch-conflict:
     needs: check
-    if: needs.check.outputs.build == 'true'
+    if: needs.check.outputs.nightly_conflict == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Report
+        run: |
+          echo "::error::The StikContainer patch no longer applies to the LiveContainer nightly. The check job's log shows the conflicts. Rebase the $PATCH_BRANCH branch onto upstream by hand."
+          exit 1
+
+  build:
+    name: Build ${{ matrix.channel }}
+    needs: check
+    if: needs.check.outputs.matrix != '[]'
     runs-on: xcode-27
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.check.outputs.matrix) }}
     env:
       GH_TOKEN: ${{ github.token }}
-      UPSTREAM_SHA: ${{ needs.check.outputs.upstream_sha }}
+      CHANNEL: ${{ matrix.channel }}
+      UPSTREAM_SHA: ${{ matrix.base }}
+      UPSTREAM_VERSION: ${{ matrix.version }}
+      STIKJIT: ${{ matrix.stikjit }}
+      STIKJIT_UPDATE: ${{ matrix.stikjit_update }}
     steps:
       - uses: maxim-lobanov/setup-xcode@v1
         with:
@@ -78,25 +244,27 @@ jobs:
           ref: ${{ env.PATCH_BRANCH }}
           fetch-depth: 0
 
-      - name: Rebase the JIT patch onto the upstream nightly
+      - name: Download the upstream IPA
+        uses: actions/download-artifact@v8
+        with:
+          name: upstream-ipas
+          path: upstream-ipas
+
+      - name: Put the patch on the upstream commit
         run: |
+          set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git remote add upstream "https://github.com/$UPSTREAM_REPO.git"
-          git fetch --quiet upstream main
-          base=$(git rev-parse --verify "$UPSTREAM_SHA^{commit}")
-          # Replay only the fork's own commits, which start with the design doc. A plain
-          # rebase would also replay old upstream commits whenever upstream rewrites its history.
-          first=$(git log --format=%H --grep='^Add built-in JIT design doc$' -n 1 HEAD)
-          [ -n "$first" ] || { echo "::error::Could not find the fork's first commit"; exit 1; }
-          echo "rebasing $(git rev-list --count "$first^..HEAD") fork commits onto $base"
-          if ! git rebase --onto "$base" "$first^"; then
-            git rebase --abort
-            echo "::error::The JIT patch no longer applies cleanly to upstream $UPSTREAM_SHA. Rebase the $PATCH_BRANCH branch by hand."
-            exit 1
-          fi
+          git fetch --quiet --no-tags upstream "$UPSTREAM_SHA"
+          # The rebase rewrites these scripts, so run copies of them.
+          cp -R scripts/stikcontainer "$RUNNER_TEMP/sc"
+          "$RUNNER_TEMP/sc/prepare_sources.sh" "$UPSTREAM_SHA" "$STIKJIT_UPDATE" || {
+            status=$?
+            [ "$status" -eq 2 ] && echo "::error::The StikContainer patch does not apply to upstream $UPSTREAM_SHA."
+            exit "$status"
+          }
           git submodule update --init --recursive
-          git log --oneline -5
 
       - name: Build
         run: |
@@ -105,19 +273,28 @@ jobs:
             -sdk iphoneos -arch arm64 -configuration Release | xcpretty
 
       - name: Package
-        run: |
-          curl -fsSL -o upstream.ipa "https://github.com/$UPSTREAM_REPO/releases/download/nightly/LiveContainer%2BSideStore.ipa"
-          sh scripts/package_ipa.sh archive.xcarchive upstream.ipa "StikContainer+SideStore.ipa"
+        run: sh scripts/package_ipa.sh archive.xcarchive "upstream-ipas/$CHANNEL.ipa" "$IPA_NAME"
 
       - name: Publish the rebased patch branch
+        if: matrix.channel == 'nightly'
         run: git push --force-with-lease origin "HEAD:$PATCH_BRANCH"
 
-      - name: Publish the nightly release
+      - name: Publish the release
         run: |
-          notes=$(printf 'upstream: %s\n\nLiveContainer+SideStore nightly %s (upstream commit %s) with the built-in StikJIT JIT enabler.\n\nUnsigned. Sideload it over an existing LiveContainer with the same Apple ID to update in place.\n' \
-            "$UPSTREAM_SHA" "${{ needs.check.outputs.upstream_version }}" "$UPSTREAM_SHA")
-          gh release delete nightly -R "$GITHUB_REPOSITORY" --cleanup-tag --yes || true
-          gh release create nightly "StikContainer+SideStore.ipa" -R "$GITHUB_REPOSITORY" \
-            --target "$PATCH_BRANCH" --prerelease \
-            --title "StikContainer nightly ${{ needs.check.outputs.upstream_version }} ($UPSTREAM_SHA)" \
-            --notes "$notes"
+          set -euo pipefail
+          short=${UPSTREAM_SHA:0:7}
+          if [ "$CHANNEL" = nightly ]; then
+            title="StikContainer nightly $UPSTREAM_VERSION ($short)"
+            what="LiveContainer+SideStore nightly $UPSTREAM_VERSION"
+            flags=(--prerelease)
+          else
+            title="StikContainer $UPSTREAM_VERSION (StikJIT $STIKJIT)"
+            what="LiveContainer+SideStore $UPSTREAM_VERSION"
+            flags=(--latest)
+          fi
+          notes=$(printf 'upstream: %s\nupstream_version: %s\nstikjit: %s\n\n%s (upstream commit %s) with the built-in StikJIT %s JIT enabler.\n\nUnsigned. Sideload it over an existing LiveContainer with the same Apple ID to update in place.\n' \
+            "$UPSTREAM_SHA" "$UPSTREAM_VERSION" "$STIKJIT" "$what" "$short" "$STIKJIT")
+          gh release delete "$CHANNEL" -R "$GITHUB_REPOSITORY" --cleanup-tag --yes || true
+          git push --force origin "HEAD:refs/tags/$CHANNEL"
+          gh release create "$CHANNEL" "$IPA_NAME" -R "$GITHUB_REPOSITORY" --verify-tag "${flags[@]}" \
+            --title "$title" --notes "$notes"
