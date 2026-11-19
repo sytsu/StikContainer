@@ -9756,6 +9756,303 @@
         }
       }
     },
+    "lc.appUpdates.autoCheck" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Check Automatically"
+          }
+        }
+      }
+    },
+    "lc.appUpdates.availableHeader" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "App Store Updates"
+          }
+        }
+      }
+    },
+    "lc.appUpdates.checking" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Checking the App Store…"
+          }
+        }
+      }
+    },
+    "lc.appUpdates.checkNow" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Check Now"
+          }
+        }
+      }
+    },
+    "lc.appUpdates.chooseIpa" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Choose IPA"
+          }
+        }
+      }
+    },
+    "lc.appUpdates.disabledTip" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Checking the App Store for updates is turned off."
+          }
+        }
+      }
+    },
+    "lc.appUpdates.error.encrypted" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This IPA is encrypted, as the App Store's own downloads are, so it can't run in LiveContainer. The installed app was left as it was. Choose a decrypted IPA instead."
+          }
+        }
+      }
+    },
+    "lc.appUpdates.error.failed %@" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Couldn't reach the App Store: %@"
+          }
+        }
+      }
+    },
+    "lc.appUpdates.error.throttled" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The App Store is turning requests away for now. Try again in a few minutes."
+          }
+        }
+      }
+    },
+    "lc.appUpdates.ignoreApp" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Stop Checking This App"
+          }
+        }
+      }
+    },
+    "lc.appUpdates.ignoredHeader" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Not Checked"
+          }
+        }
+      }
+    },
+    "lc.appUpdates.installFromSource %@ %@" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Install %1$@ from %2$@"
+          }
+        }
+      }
+    },
+    "lc.appUpdates.lastChecked %@" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Last checked %@"
+          }
+        }
+      }
+    },
+    "lc.appUpdates.neverChecked" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Not checked yet."
+          }
+        }
+      }
+    },
+    "lc.appUpdates.notInSources" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "None of your sources has a newer build. You can choose a decrypted IPA of the new version instead."
+          }
+        }
+      }
+    },
+    "lc.appUpdates.noUpdates" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "All apps are up to date."
+          }
+        }
+      }
+    },
+    "lc.appUpdates.region" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "App Store Region"
+          }
+        }
+      }
+    },
+    "lc.appUpdates.regionAutomatic %@" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Automatic (%@)"
+          }
+        }
+      }
+    },
+    "lc.appUpdates.searchingSources" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Looking in your sources…"
+          }
+        }
+      }
+    },
+    "lc.appUpdates.settingsFooter" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "LiveContainer looks up your apps on the App Store by bundle ID while it's open, at most every 6 hours. The App Store's own downloads are encrypted and can't run in LiveContainer, so an update is installed from one of your sources or from a decrypted IPA. It replaces the installed app and keeps its data and settings."
+          }
+        }
+      }
+    },
+    "lc.appUpdates.settingsHeader" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Checking"
+          }
+        }
+      }
+    },
+    "lc.appUpdates.skipVersion" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Skip This Version"
+          }
+        }
+      }
+    },
+    "lc.appUpdates.title" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Updates"
+          }
+        }
+      }
+    },
+    "lc.appUpdates.unignore" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Check Again"
+          }
+        }
+      }
+    },
+    "lc.appUpdates.updateTo %@" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Update to %@"
+          }
+        }
+      }
+    },
+    "lc.appUpdates.versionChange %@ %@" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ → %2$@"
+          }
+        }
+      }
+    },
+    "lc.appUpdates.viewInAppStore" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "App Store"
+          }
+        }
+      }
+    },
     "lc.common.ADP" : {
       "extractionState" : "stale",
       "localizations" : {

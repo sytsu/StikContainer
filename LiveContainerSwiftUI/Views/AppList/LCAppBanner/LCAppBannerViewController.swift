@@ -152,6 +152,14 @@ final class LCAppBannerViewController: UIViewController, UIContextMenuInteractio
 
         // 2. Main Section
         var sectionChildren: [UIMenuElement] = []
+        if let storeUpdate = LCAppStoreUpdateChecker.shared.update(for: model) {
+            sectionChildren.append(UIAction(
+                title: "lc.appUpdates.updateTo %@".localizeWithFormat(storeUpdate.version),
+                image: UIImage(systemName: "arrow.down.circle")
+            ) { [weak self] _ in
+                self?.delegate.openAppUpdates()
+            })
+        }
         if !model.uiIsShared, model.uiSelectedContainer != nil {
             sectionChildren.append(UIAction(
                 title: "lc.appBanner.openDataFolder".loc,
