@@ -810,6 +810,28 @@
         }
       }
     },
+    "lc.appBanner.exportingIpa %@" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Exporting %@…"
+          }
+        }
+      }
+    },
+    "lc.appBanner.exportIpa" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Export .ipa"
+          }
+        }
+      }
+    },
     "lc.appBanner.jitLaunchNow" : {
       "extractionState" : "manual",
       "localizations" : {

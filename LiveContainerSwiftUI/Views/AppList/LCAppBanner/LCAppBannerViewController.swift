@@ -208,6 +208,15 @@ final class LCAppBannerViewController: UIViewController, UIContextMenuInteractio
         sectionChildren.append(addToHomeScreenMenu)
 
         sectionChildren.append(UIAction(
+            title: "lc.appBanner.exportIpa".loc,
+            image: UIImage(systemName: "square.and.arrow.up")
+        ) { [weak self] _ in
+            Task { [weak self] in
+                await self?.exportIPA()
+            }
+        })
+
+        sectionChildren.append(UIAction(
             title: "lc.tabView.settings".loc,
             image: UIImage(systemName: "gear")
         ) { [weak self] _ in
@@ -368,6 +377,97 @@ final class LCAppBannerViewController: UIViewController, UIContextMenuInteractio
         } catch {
             cleanupExportTemporaryDirectory()
             showError(error.localizedDescription)
+        }
+    }
+
+    // Builds an .ipa of the app (see LCIPAExporter) with a cancellable progress alert, then
+    // offers it in the share sheet: Save to Files, AirDrop, or another app.
+    private func exportIPA() async {
+        let model = configuration.model
+        if model.appInfo.isLocked && !DataManager.shared.model.isHiddenAppUnlocked {
+            do {
+                if !(try await LCUtils.authenticateUser()) {
+                    return
+                }
+            } catch {
+                showError(error.localizedDescription)
+                return
+            }
+        }
+        guard viewIfLoaded?.window != nil, presentedViewController == nil else {
+            return
+        }
+
+        cleanupExportTemporaryDirectory()
+        let temporaryDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(at: temporaryDirectory, withIntermediateDirectories: true)
+        } catch {
+            showError(error.localizedDescription)
+            return
+        }
+        exportTemporaryDirectory = temporaryDirectory
+
+        let source = LCIPAExportSource(appInfo: model.appInfo)
+        let progress = Progress(totalUnitCount: 1)
+        let alert = UIAlertController(
+            title: "lc.appBanner.exportingIpa %@".localizeWithFormat(model.displayName),
+            message: "0%",
+            preferredStyle: .alert
+        )
+        alert.addAction(UIAlertAction(title: "lc.common.cancel".loc, style: .cancel) { _ in
+            progress.cancel()
+        })
+        present(alert, animated: true)
+
+        let observation = progress.observe(\.fractionCompleted) { [weak alert] observed, _ in
+            let percent = Int(observed.fractionCompleted * 100)
+            DispatchQueue.main.async {
+                alert?.message = "\(percent)%"
+            }
+        }
+        let result: Result<URL, Error> = await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    let ipaURL = try LCIPAExporter.export(source, to: temporaryDirectory, progress: progress)
+                    continuation.resume(returning: .success(ipaURL))
+                } catch {
+                    continuation.resume(returning: .failure(error))
+                }
+            }
+        }
+        observation.invalidate()
+
+        // Cancel already closed the alert.
+        if !progress.isCancelled && alert.presentingViewController != nil {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                alert.dismiss(animated: true) {
+                    continuation.resume()
+                }
+            }
+        }
+
+        switch result {
+        case .success(let ipaURL):
+            guard !progress.isCancelled, viewIfLoaded?.window != nil, presentedViewController == nil else {
+                cleanupExportTemporaryDirectory()
+                return
+            }
+            let shareSheet = UIActivityViewController(activityItems: [ipaURL], applicationActivities: nil)
+            shareSheet.completionWithItemsHandler = { [weak self] _, _, _, _ in
+                self?.cleanupExportTemporaryDirectory()
+            }
+            if let popover = shareSheet.popoverPresentationController {
+                popover.sourceView = bannerView
+                popover.sourceRect = bannerView.bounds
+            }
+            present(shareSheet, animated: true)
+        case .failure(let error):
+            cleanupExportTemporaryDirectory()
+            if !progress.isCancelled {
+                showError(error.localizedDescription)
+            }
         }
     }
 
