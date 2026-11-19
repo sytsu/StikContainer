@@ -728,19 +728,25 @@ struct LCSourcesView: View {
         NavigationView {
             Group {
                 if viewModel.sources.isEmpty {
-                    VStack(spacing: 12) {
-                        Image(systemName: "link.badge.plus")
-                            .font(.system(size: 48))
-                            .foregroundColor(.secondary)
-                        Text("lc.sources.empty".loc)
-                            .multilineTextAlignment(.center)
-                            .foregroundStyle(.secondary)
+                    VStack(spacing: 0) {
+                        appStoreEntry
+                            .padding()
+                        VStack(spacing: 12) {
+                            Image(systemName: "link.badge.plus")
+                                .font(.system(size: 48))
+                                .foregroundColor(.secondary)
+                            Text("lc.sources.empty".loc)
+                                .multilineTextAlignment(.center)
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding()
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
                     }
-                    .padding()
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
                 } else {
                     ScrollView {
                         LazyVStack(spacing: 16) {
+                            appStoreEntry
+                                .padding(.horizontal)
                             ForEach(viewModel.sources, id: \.id) { item in
                                 let apps = filteredApps(for: item)
                                 AltStoreSourceSectionView(
@@ -871,6 +877,16 @@ struct LCSourcesView: View {
     
     private var isFiltering: Bool {
         !searchContext.debouncedQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+    
+    // The built-in App Store source. While the sources are being searched, it offers to
+    // search the App Store for the same words; nothing is sent to Apple until it's opened.
+    private var appStoreEntry: some View {
+        let query = searchContext.debouncedQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        return NavigationLink(destination: LCAppStoreSourceView(sources: viewModel, initialQuery: query)) {
+            LCAppStoreSourceCard(query: query.isEmpty ? nil : query)
+        }
+        .buttonStyle(.plain)
     }
     
     private var totalFilteredAppCount: Int {

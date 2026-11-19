@@ -74,14 +74,10 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
     @State private var helpPresent = false
     
     @State private var customSortViewPresent = false
-
-    // App Store updates
-    @ObservedObject private var updateChecker = LCAppStoreUpdateChecker.shared
-    @State private var appUpdatesPresent = false
-    @State private var pendingUpdateAction: LCAppUpdateAction?
-    // The app an IPA chosen from the Updates page replaces
+    
+    // The installed app the IPA being chosen replaces (an update from the App Store source)
     @State private var ipaReplaceTarget: LCAppModel?
-
+    
     @EnvironmentObject private var sharedModel : SharedModel
     @EnvironmentObject private var sharedAppSortManager : LCAppSortManager
     
@@ -111,11 +107,6 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
         }
     }
     
-    // The apps the Updates page shows: hidden ones only while they're unlocked.
-    var appsForUpdates: [LCAppModel] {
-        sharedModel.isHiddenAppUnlocked ? sharedModel.apps + sharedModel.hiddenApps : sharedModel.apps
-    }
-
     var filteredHiddenApps: [LCAppModel] {
         let apps = sortedHiddenApps
         if searchContext.debouncedQuery.isEmpty || !sharedModel.isHiddenAppUnlocked {
@@ -265,17 +256,6 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
                 }
                 
                 ToolbarItem(placement: .topBarTrailing) {
-                    if sharedModel.multiLCStatus != 2 {
-                        let hasUpdates = !updateChecker.updates(for: appsForUpdates).isEmpty
-                        Button {
-                            appUpdatesPresent = true
-                        } label: {
-                            Label("lc.appUpdates.title".loc, systemImage: hasUpdates ? "arrow.down.circle.fill" : "arrow.down.circle")
-                        }
-                    }
-                }
-
-                ToolbarItem(placement: .topBarTrailing) {
                     Button("lc.appList.openLink".loc, systemImage: "link", action: {
                         Task { await onOpenWebViewTapped() }
                     })
@@ -421,17 +401,6 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
         .sheet(isPresented: $customSortViewPresent) {
             LCCustomSortView()
         }
-        .sheet(isPresented: $appUpdatesPresent, onDismiss: {
-            runPendingUpdateAction()
-        }) {
-            LCAppUpdatesView(apps: appsForUpdates) { action in
-                pendingUpdateAction = action
-                appUpdatesPresent = false
-            }
-        }
-        .onForeground {
-            Task { await checkForAppStoreUpdates() }
-        }
         .onAppear() {
             if !isViewAppeared {
                 if let webpageUrlStr = UserDefaults.standard.string(forKey: "webPageToOpen") {
@@ -465,8 +434,17 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
         }
         .onReceive(NotificationCenter.default.publisher(for: NSNotification.InstallAppNotification)) { obj in
             if let obj2 = obj.object as? [String: Any], let installUrl = obj2["url"] as? URL {
-                Task { await installFromUrl(urlStr: installUrl.absoluteString) }
+                let replacing = obj2["replacing"] as? LCAppModel
+                Task { await installFromUrl(urlStr: installUrl.absoluteString, replacing: replacing) }
             }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.LCChooseIPANotification)) { obj in
+            // The App Store source: install a decrypted IPA, over the app it updates if there is one.
+            guard sharedModel.multiLCStatus != 2, !installprogressVisible else {
+                return
+            }
+            ipaReplaceTarget = (obj.object as? [String: Any])?["replacing"] as? LCAppModel
+            choosingIPA = true
         }
         .searchable(text: $searchContext.query)
 
@@ -529,38 +507,6 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
             app.delegate = self
         }
         didAppear = true
-        Task { await checkForAppStoreUpdates() }
-    }
-
-    // Looks the apps up on the App Store when the last check is old enough.
-    func checkForAppStoreUpdates() async {
-        guard sharedModel.multiLCStatus != 2 else {
-            return
-        }
-        let bundleIdentifiers = (sharedModel.apps + sharedModel.hiddenApps).map { $0.bundleIdentifier }
-        await updateChecker.checkIfDue(bundleIdentifiers: bundleIdentifiers)
-    }
-
-    func openAppUpdates() {
-        appUpdatesPresent = true
-    }
-
-    // Runs what was chosen on the Updates page, once the page is gone.
-    func runPendingUpdateAction() {
-        guard let action = pendingUpdateAction else {
-            return
-        }
-        pendingUpdateAction = nil
-        switch action {
-        case .download(let url, let app):
-            Task { await installFromUrl(urlStr: url.absoluteString, replacing: app) }
-        case .chooseIPA(let app):
-            ipaReplaceTarget = app
-            // The picker is presented from the root view controller, which must be done with the sheet.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                choosingIPA = true
-            }
-        }
     }
     
     
@@ -656,7 +602,7 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
         extract(path, destination, progress)
     }
     
-    // replacing: the installed app an update from the Updates page is for. It is replaced
+    // replacing: the installed app an update from the App Store source is for. It is replaced
     // without asking, if the new app has the same bundle ID.
     func installIpaFile(_ url:URL, replacing: LCAppModel? = nil) async throws {
         let fm = FileManager()
@@ -699,9 +645,9 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
         }
 
         // Don't replace a working app with one that can't run, like the App Store's own download.
-        if replacing != nil && LCAppStoreUpdateChecker.isExecutableEncrypted(appBundle: appFolderPath) {
+        if replacing != nil && LCAppStoreInstaller.isExecutableEncrypted(appBundle: appFolderPath) {
             try? fm.removeItem(at: payloadPath)
-            throw "lc.appUpdates.error.encrypted".loc
+            throw "lc.appStore.error.encrypted".loc
         }
 
         var appRelativePath = "\(newAppInfo.bundleIdentifier()!.sanitizeNonACSII()).app"

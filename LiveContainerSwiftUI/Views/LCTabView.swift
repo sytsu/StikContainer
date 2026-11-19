@@ -18,16 +18,6 @@ struct LCTabView: View {
     @State var shouldToggleMainWindowOpen = false
     @Environment(\.scenePhase) var scenePhase
     @StateObject var downloadHelper = DownloadHelper()
-    @ObservedObject private var updateChecker = LCAppStoreUpdateChecker.shared
-
-    // How many apps have a newer version on the App Store, for the Apps tab's badge.
-    private var appUpdateCount: Int {
-        guard sharedModel.multiLCStatus != 2 else {
-            return 0
-        }
-        let apps = sharedModel.isHiddenAppUnlocked ? sharedModel.apps + sharedModel.hiddenApps : sharedModel.apps
-        return updateChecker.updates(for: apps).count
-    }
 
     let pub = NotificationCenter.default.publisher(for: UIScene.didDisconnectNotification)
     
@@ -44,7 +34,6 @@ struct LCTabView: View {
                 .tabItem {
                     Label("lc.tabView.apps".loc, systemImage: "square.stack.3d.up.fill")
                 }
-                .badge(appUpdateCount)
                 .tag(LCTabIdentifier.apps)
             if DataManager.shared.model.multiLCStatus != 2 {
                 LCTweaksView()

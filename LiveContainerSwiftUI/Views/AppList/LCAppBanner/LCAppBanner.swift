@@ -14,7 +14,6 @@ protocol LCAppBannerDelegate {
     func installMdm(data: Data)
     func openNavigationView(view: AnyView)
     func promptForGeneratedIconStyle() async -> GeneratedIconStyle?
-    func openAppUpdates()
 }
 
 struct LCAppBanner: UIViewControllerRepresentable {
@@ -24,8 +23,6 @@ struct LCAppBanner: UIViewControllerRepresentable {
 
     @AppStorage("dynamicColors", store: LCUtils.appGroupUserDefault) private var dynamicColors = true
     @AppStorage("darkModeIcon", store: LCUtils.appGroupUserDefault) private var darkModeIcon = false
-    // Redraws the banner when an App Store check finds (or drops) an update for it.
-    @ObservedObject private var updateChecker = LCAppStoreUpdateChecker.shared
     private let sharedModel = DataManager.shared.model
 
     init(appModel: LCAppModel, delegate: LCAppBannerDelegate) {

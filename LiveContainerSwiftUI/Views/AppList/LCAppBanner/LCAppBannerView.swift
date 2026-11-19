@@ -21,7 +21,6 @@ final class LCAppBannerRootView: UIView {
     private let jitBadge = LCAppBannerBadgeView(symbolName: "bolt.fill")
     private let lockBadge = LCAppBannerBadgeView(symbolName: "lock.fill")
     private let bit32Badge = LCAppBannerBadgeView(text: "32")
-    private let updateBadge = LCAppBannerBadgeView(symbolName: "arrow.down")
     private let nameSpacer = UIView()
     private let nameStack = UIStackView()
     private let detailStack = UIStackView()
@@ -76,7 +75,6 @@ final class LCAppBannerRootView: UIView {
         nameStack.addArrangedSubview(jitBadge)
         nameStack.addArrangedSubview(bit32Badge)
         nameStack.addArrangedSubview(lockBadge)
-        nameStack.addArrangedSubview(updateBadge)
         nameStack.addArrangedSubview(nameSpacer)
 
         detailStack.translatesAutoresizingMaskIntoConstraints = false
@@ -141,9 +139,7 @@ final class LCAppBannerRootView: UIView {
         iconImageView.image = icon
         nameLabel.text = model.displayName
         nameLabel.textColor = .label
-        let storeUpdate = LCAppStoreUpdateChecker.shared.update(for: model)
-        let versionText = storeUpdate.map { "lc.appUpdates.versionChange %@ %@".localizeWithFormat(model.version, $0.version) } ?? model.version
-        versionLabel.text = "\(versionText) - \(model.bundleIdentifier)"
+        versionLabel.text = "\(model.version) - \(model.bundleIdentifier)"
         versionLabel.textColor = textColor
         remarkLabel.text = model.uiRemark
         remarkLabel.textColor = textColor.withAlphaComponent(0.8)
@@ -159,8 +155,6 @@ final class LCAppBannerRootView: UIView {
         lockBadge.backgroundColor = UIColor(named: "BadgeColor") ?? .systemOrange
         bit32Badge.isHidden = !model.uiIs32bit
         bit32Badge.backgroundColor = UIColor(named: "32BitBadgeColor") ?? .systemBlue
-        updateBadge.isHidden = storeUpdate == nil
-        updateBadge.backgroundColor = .systemGreen
 
         visualBackgroundView.backgroundColor = dynamicColors
             ? mainColor.withAlphaComponent(0.5)
@@ -172,7 +166,7 @@ final class LCAppBannerRootView: UIView {
             isEnabled: !model.isAppRunning
         )
 
-        var accessibilityParts = [model.displayName, "\(versionText) - \(model.bundleIdentifier)"]
+        var accessibilityParts = [model.displayName, "\(model.version) - \(model.bundleIdentifier)"]
         if !model.uiRemark.isEmpty {
             accessibilityParts.append(model.uiRemark)
         }
